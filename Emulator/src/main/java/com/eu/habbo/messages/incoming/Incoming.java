@@ -483,4 +483,7 @@ public class Incoming {
     public static final int HousekeepingGiveCurrencyEvent = 9118;
     public static final int HousekeepingGrantItemEvent = 9119;
     public static final int HousekeepingSetHcSubscriptionEvent = 9120;
+    public static final int HousekeepingSendHotelAlertEvent = 9121;
+    public static final int HousekeepingGetDashboardEvent = 9122;
+    public static final int HousekeepingListActionLogEvent = 9123;
 }

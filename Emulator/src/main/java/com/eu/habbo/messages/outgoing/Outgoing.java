@@ -591,5 +591,7 @@ public class Outgoing {
     public static final int HousekeepingActionResultComposer = 9201;
     public static final int HousekeepingRoomDetailComposer = 9202;
     public static final int HousekeepingRoomListComposer = 9203;
+    public static final int HousekeepingDashboardComposer = 9204;
+    public static final int HousekeepingActionLogComposer = 9205;
 
 }
