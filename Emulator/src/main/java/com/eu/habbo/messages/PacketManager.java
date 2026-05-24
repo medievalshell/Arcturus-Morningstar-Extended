@@ -722,5 +722,7 @@ public class PacketManager {
         this.registerHandler(Incoming.HousekeepingFindUserByIdEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingFindUserByIdEvent.class);
         this.registerHandler(Incoming.HousekeepingBanUserEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingBanUserEvent.class);
         this.registerHandler(Incoming.HousekeepingUnbanUserEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingUnbanUserEvent.class);
+        this.registerHandler(Incoming.HousekeepingMuteUserEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingMuteUserEvent.class);
+        this.registerHandler(Incoming.HousekeepingKickUserEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingKickUserEvent.class);
     }
 }
