@@ -589,5 +589,7 @@ public class Outgoing {
     // Housekeeping (in-client admin panel) — IDs 9200..9299 reserved
     public static final int HousekeepingUserDetailComposer = 9200;
     public static final int HousekeepingActionResultComposer = 9201;
+    public static final int HousekeepingRoomDetailComposer = 9202;
+    public static final int HousekeepingRoomListComposer = 9203;
 
 }

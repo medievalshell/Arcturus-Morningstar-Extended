@@ -472,4 +472,11 @@ public class Incoming {
     public static final int HousekeepingSetUserRankEvent = 9107;
     public static final int HousekeepingTradeLockUserEvent = 9108;
     public static final int HousekeepingResetUserPasswordEvent = 9109;
+    public static final int HousekeepingFindRoomByIdEvent = 9110;
+    public static final int HousekeepingSearchRoomsEvent = 9111;
+    public static final int HousekeepingRoomStateEvent = 9112;
+    public static final int HousekeepingMuteRoomEvent = 9113;
+    public static final int HousekeepingKickAllFromRoomEvent = 9114;
+    public static final int HousekeepingTransferRoomOwnershipEvent = 9115;
+    public static final int HousekeepingDeleteRoomEvent = 9116;
 }

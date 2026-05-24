@@ -728,5 +728,12 @@ public class PacketManager {
         this.registerHandler(Incoming.HousekeepingSetUserRankEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingSetUserRankEvent.class);
         this.registerHandler(Incoming.HousekeepingTradeLockUserEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingTradeLockUserEvent.class);
         this.registerHandler(Incoming.HousekeepingResetUserPasswordEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingResetUserPasswordEvent.class);
+        this.registerHandler(Incoming.HousekeepingFindRoomByIdEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingFindRoomByIdEvent.class);
+        this.registerHandler(Incoming.HousekeepingSearchRoomsEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingSearchRoomsEvent.class);
+        this.registerHandler(Incoming.HousekeepingRoomStateEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingRoomStateEvent.class);
+        this.registerHandler(Incoming.HousekeepingMuteRoomEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingMuteRoomEvent.class);
+        this.registerHandler(Incoming.HousekeepingKickAllFromRoomEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingKickAllFromRoomEvent.class);
+        this.registerHandler(Incoming.HousekeepingTransferRoomOwnershipEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingTransferRoomOwnershipEvent.class);
+        this.registerHandler(Incoming.HousekeepingDeleteRoomEvent, com.eu.habbo.messages.incoming.housekeeping.HousekeepingDeleteRoomEvent.class);
     }
 }
