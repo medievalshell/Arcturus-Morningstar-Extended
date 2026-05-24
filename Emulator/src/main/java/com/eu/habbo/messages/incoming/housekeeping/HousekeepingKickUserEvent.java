@@ -31,19 +31,19 @@ public class HousekeepingKickUserEvent extends MessageHandler {
         String reason = this.packet.readString();
 
         if (userId <= 0) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "invalid_input"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.invalid_input"));
             return;
         }
 
         Habbo target = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
 
         if (target == null) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "user_offline"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.user_offline"));
             return;
         }
 
         if (target.hasPermission(Permission.ACC_UNKICKABLE)) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "target_unkickable"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.target_unkickable"));
             return;
         }
 

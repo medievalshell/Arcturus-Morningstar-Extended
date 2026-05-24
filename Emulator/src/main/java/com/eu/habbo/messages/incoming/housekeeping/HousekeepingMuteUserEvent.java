@@ -33,14 +33,14 @@ public class HousekeepingMuteUserEvent extends MessageHandler {
         int minutes = this.packet.readInt();
 
         if (userId <= 0 || minutes <= 0) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "invalid_input"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.invalid_input"));
             return;
         }
 
         Habbo target = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
 
         if (target == null) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "user_offline"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.user_offline"));
             return;
         }
 

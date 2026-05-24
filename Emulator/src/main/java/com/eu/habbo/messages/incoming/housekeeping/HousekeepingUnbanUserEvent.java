@@ -23,14 +23,14 @@ public class HousekeepingUnbanUserEvent extends MessageHandler {
         int userId = this.packet.readInt();
 
         if (userId <= 0) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "invalid_input"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.invalid_input"));
             return;
         }
 
         HabboInfo info = Emulator.getGameEnvironment().getHabboManager().getHabboInfo(userId);
 
         if (info == null) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "user_not_found"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.user_not_found"));
             return;
         }
 
@@ -39,6 +39,6 @@ public class HousekeepingUnbanUserEvent extends MessageHandler {
         // on a never-banned user is a benign no-op that returns false.
         boolean cleared = Emulator.getGameEnvironment().getModToolManager().unban(info.getUsername());
 
-        this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, cleared, cleared ? userId : 0, cleared ? "" : "no_active_ban"));
+        this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, cleared, cleared ? userId : 0, cleared ? "" : "housekeeping.error.no_active_ban"));
     }
 }

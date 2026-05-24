@@ -37,7 +37,7 @@ public class HousekeepingBanUserEvent extends MessageHandler {
         int hours = this.packet.readInt();
 
         if (userId <= 0 || hours <= 0) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "invalid_input"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.invalid_input"));
             return;
         }
 
@@ -48,7 +48,7 @@ public class HousekeepingBanUserEvent extends MessageHandler {
                 .ban(userId, this.client.getHabbo(), reason != null ? reason : "", duration, ModToolBanType.ACCOUNT, 0);
 
         if (bans == null || bans.isEmpty()) {
-            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "ban_failed"));
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.ban_failed"));
             return;
         }
 
