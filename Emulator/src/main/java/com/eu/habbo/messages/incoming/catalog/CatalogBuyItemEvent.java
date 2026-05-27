@@ -13,11 +13,7 @@ import com.eu.habbo.habbohotel.users.HabboBadge;
 import com.eu.habbo.habbohotel.users.HabboInventory;
 import com.eu.habbo.habbohotel.users.subscriptions.Subscription;
 import com.eu.habbo.messages.incoming.MessageHandler;
-import com.eu.habbo.messages.outgoing.catalog.AlertPurchaseFailedComposer;
-import com.eu.habbo.messages.outgoing.catalog.AlertPurchaseUnavailableComposer;
-import com.eu.habbo.messages.outgoing.catalog.BuildersClubFurniCountComposer;
-import com.eu.habbo.messages.outgoing.catalog.BuildersClubSubscriptionStatusComposer;
-import com.eu.habbo.messages.outgoing.catalog.PurchaseOKComposer;
+import com.eu.habbo.messages.outgoing.catalog.*;
 import com.eu.habbo.messages.outgoing.generic.alerts.BubbleAlertComposer;
 import com.eu.habbo.messages.outgoing.generic.alerts.BubbleAlertKeys;
 import com.eu.habbo.messages.outgoing.generic.alerts.HotelWillCloseInMinutesComposer;
@@ -201,6 +197,15 @@ public class CatalogBuyItemEvent extends MessageHandler {
 
             else
                 item = page.getCatalogItem(itemId);
+
+            if (item == null && !(page instanceof RecentPurchasesLayout)) {
+                for (CatalogItem candidate : page.getCatalogItems().valueCollection()) {
+                    if (candidate != null && candidate.getOfferId() == itemId) {
+                        item = candidate;
+                        break;
+                    }
+                }
+            }
             // temp patch, can a dev with better knowledge than me look into this asap pls.
             if (page instanceof  BotsLayout) {
                 if (!this.client.getHabbo().hasPermission(Permission.ACC_UNLIMITED_BOTS) && this.client.getHabbo().getInventory().getBotsComponent().getBots().size() >= BotManager.MAXIMUM_BOT_INVENTORY_SIZE) {
