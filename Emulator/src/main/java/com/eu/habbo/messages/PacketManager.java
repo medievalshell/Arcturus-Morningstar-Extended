@@ -285,6 +285,9 @@ public class PacketManager {
         this.registerHandler(Incoming.FurniEditorInteractionsEvent, FurniEditorInteractionsEvent.class);
         this.registerHandler(Incoming.FurniEditorUpdateEvent, FurniEditorUpdateEvent.class);
         this.registerHandler(Incoming.FurniEditorDeleteEvent, FurniEditorDeleteEvent.class);
+        this.registerHandler(Incoming.FurniEditorUpdateFurnidataEvent, FurniEditorUpdateFurnidataEvent.class);
+        this.registerHandler(Incoming.FurniEditorRevertFurnidataEvent, FurniEditorRevertFurnidataEvent.class);
+        this.registerHandler(Incoming.FurniEditorImportTextEvent, FurniEditorImportTextEvent.class);
 
         // Catalog Admin
         this.registerHandler(Incoming.CatalogAdminSavePageEvent, CatalogAdminSavePageEvent.class);
@@ -298,6 +301,8 @@ public class PacketManager {
         this.registerHandler(Incoming.CatalogAdminPublishEvent, CatalogAdminPublishEvent.class);
         this.registerHandler(Incoming.CatalogAdminSavePageImagesEvent, CatalogAdminSavePageImagesEvent.class);
         this.registerHandler(Incoming.CatalogAdminSavePageIconEvent, CatalogAdminSavePageIconEvent.class);
+        this.registerHandler(Incoming.CatalogAdminLoadOfferEvent, CatalogAdminLoadOfferEvent.class);
+        this.registerHandler(Incoming.CatalogAdminLoadPageEvent, CatalogAdminLoadPageEvent.class);
     }
 
     private void registerEvent() throws Exception {
