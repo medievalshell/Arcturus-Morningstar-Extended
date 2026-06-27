@@ -21,6 +21,9 @@ public class MoodLightSaveSettingsEvent extends MessageHandler {
     public void handle() throws Exception {
         Room room = this.client.getHabbo().getHabboInfo().getCurrentRoom();
 
+        if (room == null)
+            return;
+
         if ((room.getGuildId() <= 0 && room.getGuildRightLevel(this.client.getHabbo()).isLessThan(RoomRightLevels.GUILD_RIGHTS)) && !room.hasRights(this.client.getHabbo()))
             return;
 
@@ -40,7 +43,7 @@ public class MoodLightSaveSettingsEvent extends MessageHandler {
             return;
         }
 
-        for (RoomMoodlightData data : room.getMoodlightData().valueCollection()) {
+        for (RoomMoodlightData data : room.getMoodlightData().values()) {
             if (data.getId() == id) {
                 data.setBackgroundOnly(backgroundOnly == 2);
                 data.setColor(color);
@@ -59,6 +62,6 @@ public class MoodLightSaveSettingsEvent extends MessageHandler {
         }
 
         room.setNeedsUpdate(true);
-        this.client.sendResponse(new MoodLightDataComposer(room.getMoodlightData()));
+        this.client.sendResponse(new MoodLightDataComposer(room.getMoodlightData().values()));
     }
 }

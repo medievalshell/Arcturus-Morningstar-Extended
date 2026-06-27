@@ -12,12 +12,14 @@ import com.eu.habbo.habbohotel.wired.core.WiredContext;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredSourceUtil;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.set.hash.THashSet;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
@@ -27,8 +29,8 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
 
     public static final WiredConditionType type = WiredConditionType.STUFF_IS;
 
-    protected THashSet<HabboItem> items = new THashSet<>();
-    protected THashSet<HabboItem> secondaryItems = new THashSet<>();
+    protected Set<HabboItem> items = new LinkedHashSet<>();
+    protected Set<HabboItem> secondaryItems = new LinkedHashSet<>();
     protected int furniSource = WiredSourceUtil.SOURCE_TRIGGER;
     protected int compareFurniSource = WiredSourceUtil.SOURCE_TRIGGER;
     protected int quantifier = QUANTIFIER_ALL;
@@ -52,6 +54,10 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
 
     @Override
     public boolean evaluate(WiredContext ctx) {
+        if (ctx == null) {
+            return false;
+        }
+
         if (this.quantifier == QUANTIFIER_ANY) {
             return this.evaluateAnyMatches(ctx);
         }
@@ -65,7 +71,7 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
             return false;
         }
 
-        THashSet<Integer> compareTypeIds = this.resolveCompareTypeIds(ctx);
+        Set<Integer> compareTypeIds = this.resolveCompareTypeIds(ctx);
         if (compareTypeIds.isEmpty()) {
             return false;
         }
@@ -85,7 +91,7 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
             return false;
         }
 
-        THashSet<Integer> compareTypeIds = this.resolveCompareTypeIds(ctx);
+        Set<Integer> compareTypeIds = this.resolveCompareTypeIds(ctx);
         if (compareTypeIds.isEmpty()) {
             return false;
         }
@@ -104,10 +110,10 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
         return this.resolveConfiguredItems(ctx, this.furniSource);
     }
 
-    protected THashSet<Integer> resolveCompareTypeIds(WiredContext ctx) {
+    protected Set<Integer> resolveCompareTypeIds(WiredContext ctx) {
         this.refresh();
 
-        THashSet<Integer> compareTypeIds = new THashSet<>();
+        Set<Integer> compareTypeIds = new HashSet<>();
 
         for (HabboItem item : this.resolveConfiguredItems(ctx, this.compareFurniSource)) {
             if (item != null && item.getBaseItem() != null) {
@@ -118,7 +124,7 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
         return compareTypeIds;
     }
 
-    protected boolean matchesType(HabboItem item, THashSet<Integer> compareTypeIds) {
+    protected boolean matchesType(HabboItem item, Set<Integer> compareTypeIds) {
         return item != null && item.getBaseItem() != null && compareTypeIds.contains(item.getBaseItem().getId());
     }
 
@@ -158,7 +164,14 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
         }
 
         if (wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+            JsonData data;
+            try {
+                data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+            } catch (RuntimeException exception) {
+                this.onPickUp();
+                return;
+            }
+
             if (data == null) {
                 return;
             }
@@ -291,8 +304,8 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
         this.refreshSelection(this.secondaryItems);
     }
 
-    private void refreshSelection(THashSet<HabboItem> selection) {
-        THashSet<HabboItem> remove = new THashSet<>();
+    private void refreshSelection(Set<HabboItem> selection) {
+        Set<HabboItem> remove = new HashSet<>();
 
         Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId());
         if (room == null) {
@@ -310,8 +323,8 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
         }
     }
 
-    private void loadItems(Room room, List<Integer> itemIds, THashSet<HabboItem> target) {
-        if (itemIds == null) {
+    void loadItems(Room room, List<Integer> itemIds, Set<HabboItem> target) {
+        if (room == null || itemIds == null || target == null) {
             return;
         }
 
@@ -327,7 +340,7 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
         }
     }
 
-    private String serializeIds(THashSet<HabboItem> source) {
+    private String serializeIds(Set<HabboItem> source) {
         return source.stream()
                 .map(HabboItem::getId)
                 .filter(id -> id > 0)
@@ -335,7 +348,7 @@ public class WiredConditionFurniTypeMatch extends InteractionWiredCondition {
                 .collect(Collectors.joining(";"));
     }
 
-    private List<Integer> parseIds(String value) {
+    List<Integer> parseIds(String value) {
         List<Integer> result = new ArrayList<>();
         if (value == null || value.isEmpty()) {
             return result;

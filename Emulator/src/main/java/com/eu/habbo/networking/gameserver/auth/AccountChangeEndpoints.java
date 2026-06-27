@@ -6,7 +6,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
-import org.mindrot.jbcrypt.BCrypt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -95,7 +94,7 @@ final class AccountChangeEndpoints {
                 return;
             }
 
-            String hashed = BCrypt.hashpw(newPassword, BCrypt.gensalt(12));
+            String hashed = PasswordHasher.hash(newPassword, 12);
             try (PreparedStatement upd = conn.prepareStatement(
                     "UPDATE users SET password = ? WHERE id = ? LIMIT 1")) {
                 upd.setString(1, hashed);
@@ -467,7 +466,7 @@ final class AccountChangeEndpoints {
                 com.eu.habbo.habbohotel.users.Habbo habbo =
                         Emulator.getGameServer().getGameClientManager().getHabbo(userId);
                 if (habbo != null && habbo.getClient() != null) {
-                    Emulator.getGameServer().getGameClientManager().disposeClient(habbo.getClient());
+                    Emulator.getGameServer().getGameClientManager().forceDisposeClient(habbo.getClient());
                 }
             }
 

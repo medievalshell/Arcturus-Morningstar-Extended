@@ -12,13 +12,15 @@ import com.eu.habbo.habbohotel.wired.core.WiredContext;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredSourceUtil;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.set.hash.THashSet;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class WiredConditionHasAltitude extends InteractionWiredCondition {
@@ -30,7 +32,7 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
 
     public static final WiredConditionType type = WiredConditionType.HAS_ALTITUDE;
 
-    private final THashSet<HabboItem> items;
+    private final Set<HabboItem> items;
     private int comparison = COMPARISON_EQUAL;
     private double altitude = 0.0D;
     private int furniSource = WiredSourceUtil.SOURCE_TRIGGER;
@@ -38,12 +40,12 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
 
     public WiredConditionHasAltitude(ResultSet set, Item baseItem) throws SQLException {
         super(set, baseItem);
-        this.items = new THashSet<>();
+        this.items = new LinkedHashSet<>();
     }
 
     public WiredConditionHasAltitude(int id, int userId, Item item, String extradata, int limitedStack, int limitedSells) {
         super(id, userId, item, extradata, limitedStack, limitedSells);
-        this.items = new THashSet<>();
+        this.items = new LinkedHashSet<>();
     }
 
     @Override
@@ -97,7 +99,14 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
             return;
         }
 
-        JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+        JsonData data;
+        try {
+            data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+        } catch (RuntimeException exception) {
+            this.onPickUp();
+            return;
+        }
+
         if (data == null) {
             return;
         }
@@ -112,6 +121,10 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
         }
 
         for (Integer id : data.itemIds) {
+            if (id == null) {
+                continue;
+            }
+
             HabboItem item = room.getHabboItem(id);
             if (item != null) {
                 this.items.add(item);
@@ -212,7 +225,7 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
     }
 
     private void refresh(Room room) {
-        THashSet<HabboItem> remove = new THashSet<>();
+        Set<HabboItem> remove = new HashSet<>();
 
         for (HabboItem item : this.items) {
             if (room.getHabboItem(item.getId()) == null) {
@@ -225,7 +238,7 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
         }
     }
 
-    private int normalizeComparison(int value) {
+    int normalizeComparison(int value) {
         if (value < COMPARISON_LESS || value > COMPARISON_GREATER) {
             return COMPARISON_EQUAL;
         }
@@ -233,11 +246,11 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
         return value;
     }
 
-    private int normalizeQuantifier(int value) {
+    int normalizeQuantifier(int value) {
         return (value == QUANTIFIER_ANY) ? QUANTIFIER_ANY : QUANTIFIER_ALL;
     }
 
-    private int normalizeFurniSource(int value) {
+    int normalizeFurniSource(int value) {
         switch (value) {
             case WiredSourceUtil.SOURCE_SELECTED:
             case WiredSourceUtil.SOURCE_SELECTOR:
@@ -249,12 +262,12 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
         }
     }
 
-    private double normalizeAltitude(double value) {
+    double normalizeAltitude(double value) {
         double clampedValue = Math.max(0.0D, Math.min(Room.MAXIMUM_FURNI_HEIGHT, value));
         return BigDecimal.valueOf(clampedValue).setScale(2, RoundingMode.HALF_UP).doubleValue();
     }
 
-    private double parseAltitudeOrDefault(String value) {
+    double parseAltitudeOrDefault(String value) {
         if (value == null || value.trim().isEmpty()) {
             return 0.0D;
         }
@@ -266,7 +279,7 @@ public class WiredConditionHasAltitude extends InteractionWiredCondition {
         }
     }
 
-    private String formatAltitude(double value) {
+    String formatAltitude(double value) {
         BigDecimal decimal = BigDecimal.valueOf(this.normalizeAltitude(value)).stripTrailingZeros();
         return (decimal.scale() < 0 ? decimal.setScale(0, RoundingMode.DOWN) : decimal).toPlainString();
     }

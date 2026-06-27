@@ -13,7 +13,6 @@ import com.eu.habbo.habbohotel.wired.core.WiredContext;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.threading.runnables.WiredResetTimers;
-import gnu.trove.procedure.TObjectProcedure;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -49,15 +48,11 @@ public class WiredEffectResetTimers extends InteractionWiredEffect {
 
         if (this.requiresTriggeringUser()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredTrigger>() {
-                @Override
-                public boolean execute(InteractionWiredTrigger object) {
-                    if (!object.isTriggeredByRoomUnit()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredTrigger object : room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY())) {
+                if (!object.isTriggeredByRoomUnit()) {
+                    invalidTriggers.add(object.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -96,19 +91,16 @@ public class WiredEffectResetTimers extends InteractionWiredEffect {
     public void loadWiredData(ResultSet set, Room room) throws SQLException {
         String wiredData = set.getString("wired_data");
 
-        if (wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
-            this.delay = data.delay;
+        JsonData jsonData = WiredUtilityPayloadGuard.fromJson(wiredData, JsonData.class);
+        if (jsonData != null) {
+            this.delay = WiredUtilityPayloadGuard.delay(jsonData.delay);
         } else {
-            try {
-                if (!wiredData.equals("")) {
-                    this.delay = Integer.parseInt(wiredData);
-                }
-            } catch (Exception e) {
+            if (wiredData != null && !wiredData.equals("")) {
+                this.delay = WiredUtilityPayloadGuard.parseDelay(wiredData);
             }
         }
 
-        this.setDelay(this.delay);
+        this.setDelay(WiredUtilityPayloadGuard.delay(this.delay));
     }
 
     @Override

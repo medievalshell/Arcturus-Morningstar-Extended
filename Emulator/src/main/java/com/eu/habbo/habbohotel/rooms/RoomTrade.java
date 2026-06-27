@@ -10,22 +10,25 @@ import com.eu.habbo.messages.outgoing.rooms.users.RoomUserStatusComposer;
 import com.eu.habbo.messages.outgoing.trading.*;
 import com.eu.habbo.plugin.events.trading.TradeConfirmEvent;
 import com.eu.habbo.threading.runnables.QueryDeleteHabboItem;
-import gnu.trove.set.hash.THashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class RoomTrade {
     private static final Logger LOGGER = LoggerFactory.getLogger(RoomTrade.class);
     //Configuration. Loaded from database & updated accordingly.
     public static boolean TRADING_ENABLED = true;
     public static boolean TRADING_REQUIRES_PERK = true;
+    public static final int MAX_OFFERED_ITEMS = 100;
 
     private final List<RoomTradeUser> users;
     private final Room room;
+    private boolean completed = false;
 
     public RoomTrade(Habbo userOne, Habbo userTwo, Room room) {
         this.users = new ArrayList<>();
@@ -54,10 +57,10 @@ public class RoomTrade {
         this.sendMessageToUsers(new TradeStartComposer(this));
     }
 
-    public void offerItem(Habbo habbo, HabboItem item) {
+    public synchronized void offerItem(Habbo habbo, HabboItem item) {
         RoomTradeUser user = this.getRoomTradeUserForHabbo(habbo);
 
-        if (user.getItems().contains(item))
+        if (user == null || item == null || user.getItems().contains(item) || user.getItems().size() >= MAX_OFFERED_ITEMS)
             return;
 
         habbo.getInventory().getItemsComponent().removeHabboItem(item);
@@ -67,10 +70,16 @@ public class RoomTrade {
         this.updateWindow();
     }
 
-    public void offerMultipleItems(Habbo habbo, THashSet<HabboItem> items) {
+    public synchronized void offerMultipleItems(Habbo habbo, Set<HabboItem> items) {
         RoomTradeUser user = this.getRoomTradeUserForHabbo(habbo);
 
+        if (user == null || items == null)
+            return;
+
         for (HabboItem item : items) {
+            if (user.getItems().size() >= MAX_OFFERED_ITEMS)
+                break;
+
             if (!user.getItems().contains(item)) {
                 habbo.getInventory().getItemsComponent().removeHabboItem(item);
                 user.getItems().add(item);
@@ -81,10 +90,10 @@ public class RoomTrade {
         this.updateWindow();
     }
 
-    public void removeItem(Habbo habbo, HabboItem item) {
+    public synchronized void removeItem(Habbo habbo, HabboItem item) {
         RoomTradeUser user = this.getRoomTradeUserForHabbo(habbo);
 
-        if (!user.getItems().contains(item))
+        if (user == null || item == null || !user.getItems().contains(item))
             return;
 
         habbo.getInventory().getItemsComponent().addItem(item);
@@ -94,8 +103,11 @@ public class RoomTrade {
         this.updateWindow();
     }
 
-    public void accept(Habbo habbo, boolean value) {
+    public synchronized void accept(Habbo habbo, boolean value) {
         RoomTradeUser user = this.getRoomTradeUserForHabbo(habbo);
+
+        if (user == null)
+            return;
 
         user.setAccepted(value);
 
@@ -110,8 +122,17 @@ public class RoomTrade {
         }
     }
 
-    public void confirm(Habbo habbo) {
+    public synchronized void confirm(Habbo habbo) {
+        // Re-entry guard: both participants confirm on their own EventLoop
+        // threads. Without this (and the method-level lock) two concurrent
+        // confirms could each observe "all confirmed" and run tradeItems()
+        // twice → item/credit duplication.
+        if (this.completed) return;
+
         RoomTradeUser user = this.getRoomTradeUserForHabbo(habbo);
+
+        if (user == null)
+            return;
 
         user.confirm();
 
@@ -122,9 +143,17 @@ public class RoomTrade {
                 accepted = false;
         }
         if (accepted) {
+            this.completed = true;
+
             if (this.tradeItems()) {
                 this.closeWindow();
                 this.sendMessageToUsers(new TradeCompleteComposer());
+            } else {
+                this.returnItems();
+                for (RoomTradeUser roomTradeUser : this.users) {
+                    roomTradeUser.clearItems();
+                }
+                this.closeWindow();
             }
 
             this.room.stopTrade(this);
@@ -176,12 +205,12 @@ public class RoomTrade {
             int userOneId = userOne.getHabbo().getHabboInfo().getId();
             int userTwoId = userTwo.getHabbo().getHabboInfo().getId();
 
-            try (PreparedStatement statement = connection.prepareStatement("UPDATE items SET user_id = ? WHERE id = ? LIMIT 1")) {
+            try (PreparedStatement statement = connection.prepareStatement("UPDATE items SET user_id = ? WHERE id = ? AND user_id = ? LIMIT 1")) {
                 try (PreparedStatement stmt = connection.prepareStatement("INSERT INTO room_trade_log_items (id, item_id, user_id) VALUES (?, ?, ?)")) {
                     for (HabboItem item : userOne.getItems()) {
-                        item.setUserId(userTwoId);
                         statement.setInt(1, userTwoId);
                         statement.setInt(2, item.getId());
+                        statement.setInt(3, userOneId);
                         statement.addBatch();
 
                         if (logTrades) {
@@ -193,9 +222,9 @@ public class RoomTrade {
                     }
 
                     for (HabboItem item : userTwo.getItems()) {
-                        item.setUserId(userOneId);
                         statement.setInt(1, userOneId);
                         statement.setInt(2, item.getId());
+                        statement.setInt(3, userTwoId);
                         statement.addBatch();
 
                         if (logTrades) {
@@ -211,20 +240,35 @@ public class RoomTrade {
                     }
                 }
 
-                statement.executeBatch();
+                int expectedUpdates = userOne.getItems().size() + userTwo.getItems().size();
+                int[] updateCounts = statement.executeBatch();
+                if (!RoomTrade.allOwnershipUpdatesSucceeded(updateCounts, expectedUpdates)) {
+                    this.sendMessageToUsers(new TradeClosedComposer(userOne.getHabbo().getRoomUnit().getId(), TradeClosedComposer.ITEMS_NOT_FOUND));
+                    return false;
+                }
             }
         } catch (SQLException e) {
             LOGGER.error("Caught SQL exception", e);
+            this.sendMessageToUsers(new TradeClosedComposer(userOne.getHabbo().getRoomUnit().getId(), TradeClosedComposer.ITEMS_NOT_FOUND));
+            return false;
         }
 
-        THashSet<HabboItem> itemsUserOne = new THashSet<>(userOne.getItems());
-        THashSet<HabboItem> itemsUserTwo = new THashSet<>(userTwo.getItems());
+        for (HabboItem item : userOne.getItems()) {
+            item.setUserId(userTwo.getHabbo().getHabboInfo().getId());
+        }
+
+        for (HabboItem item : userTwo.getItems()) {
+            item.setUserId(userOne.getHabbo().getHabboInfo().getId());
+        }
+
+        Set<HabboItem> itemsUserOne = new HashSet<>(userOne.getItems());
+        Set<HabboItem> itemsUserTwo = new HashSet<>(userTwo.getItems());
 
         userOne.clearItems();
         userTwo.clearItems();
 
         int creditsForUserTwo = 0;
-        THashSet<HabboItem> creditFurniUserOne = new THashSet<>();
+        Set<HabboItem> creditFurniUserOne = new HashSet<>();
         for (HabboItem item : itemsUserOne) {
             int worth = RoomTrade.getCreditsByItem(item);
             if (worth > 0) {
@@ -236,7 +280,7 @@ public class RoomTrade {
         itemsUserOne.removeAll(creditFurniUserOne);
 
         int creditsForUserOne = 0;
-        THashSet<HabboItem> creditFurniUserTwo = new THashSet<>();
+        Set<HabboItem> creditFurniUserTwo = new HashSet<>();
         for (HabboItem item : itemsUserTwo) {
             int worth = RoomTrade.getCreditsByItem(item);
             if (worth > 0) {
@@ -264,6 +308,10 @@ public class RoomTrade {
     protected void clearAccepted() {
         for (RoomTradeUser user : this.users) {
             user.setAccepted(false);
+            // Any change to the offered items invalidates a prior confirmation;
+            // without this a stale confirmed=true lets a user strip their side
+            // and still complete the trade once the partner re-confirms.
+            user.setConfirmed(false);
         }
     }
 
@@ -322,6 +370,20 @@ public class RoomTrade {
 
     public List<RoomTradeUser> getRoomTradeUsers() {
         return this.users;
+    }
+
+    static boolean allOwnershipUpdatesSucceeded(int[] updateCounts, int expectedUpdates) {
+        if (updateCounts == null || updateCounts.length != expectedUpdates) {
+            return false;
+        }
+
+        for (int updateCount : updateCounts) {
+            if (updateCount == Statement.EXECUTE_FAILED || updateCount == 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public static int getCreditsByItem(HabboItem item) {

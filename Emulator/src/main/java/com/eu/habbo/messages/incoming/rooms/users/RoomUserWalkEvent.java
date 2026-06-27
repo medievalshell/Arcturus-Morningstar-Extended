@@ -17,9 +17,10 @@ import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.rooms.users.RoomUnitOnRollerComposer;
 import com.eu.habbo.messages.outgoing.rooms.users.RoomUserStatusComposer;
 import com.eu.habbo.plugin.events.users.UserIdleEvent;
-import gnu.trove.set.hash.THashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Set;
 
 public class RoomUserWalkEvent extends MessageHandler {
 
@@ -139,7 +140,7 @@ public class RoomUserWalkEvent extends MessageHandler {
           return;
         }
 
-        THashSet<HabboItem> items = room.getItemsAt(tile);
+        Set<HabboItem> items = room.getItemsAt(tile);
 
         if (!items.isEmpty()) {
           for (HabboItem item : items) {
@@ -163,7 +164,13 @@ public class RoomUserWalkEvent extends MessageHandler {
           }
 
           if (roomUnit.getMoveBlockingTask() != null) {
-            roomUnit.getMoveBlockingTask().get();
+            try {
+              // Bound the wait so a stuck/delayed move-blocking task can't park
+              // the Netty event loop (and thus every client on it) indefinitely.
+              roomUnit.getMoveBlockingTask().get(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException | java.util.concurrent.ExecutionException | InterruptedException e) {
+              // proceed with the walk regardless
+            }
           }
 
           boolean needsLocationResync =

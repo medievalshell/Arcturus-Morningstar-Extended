@@ -83,12 +83,9 @@ import com.eu.habbo.habbohotel.wired.highscores.WiredHighscoreManager;
 import com.eu.habbo.messages.outgoing.inventory.AddHabboItemComposer;
 import com.eu.habbo.plugin.events.emulator.EmulatorLoadItemsManagerEvent;
 import com.eu.habbo.threading.runnables.QueryDeleteHabboItem;
-import gnu.trove.TCollections;
-import gnu.trove.iterator.TIntObjectIterator;
-import gnu.trove.map.TIntObjectMap;
-import gnu.trove.map.hash.THashMap;
-import gnu.trove.map.hash.TIntObjectHashMap;
-import gnu.trove.set.hash.THashSet;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -103,19 +100,19 @@ public class ItemManager {
     //Configuration. Loaded from database & updated accordingly.
     public static boolean RECYCLER_ENABLED = true;
 
-    private final TIntObjectMap<Item> items;
-    private final TIntObjectHashMap<CrackableReward> crackableRewards;
-    private final THashSet<ItemInteraction> interactionsList;
-    private final THashMap<String, SoundTrack> soundTracks;
+    private final Int2ObjectMap<Item> items;
+    private final Int2ObjectMap<CrackableReward> crackableRewards;
+    private final Set<ItemInteraction> interactionsList;
+    private final Map<String, SoundTrack> soundTracks;
     private final YoutubeManager youtubeManager;
     private final WiredHighscoreManager highscoreManager;
     private final TreeMap<Integer, NewUserGift> newuserGifts;
 
     public ItemManager() {
-        this.items = TCollections.synchronizedMap(new TIntObjectHashMap<>());
-        this.crackableRewards = new TIntObjectHashMap<>();
-        this.interactionsList = new THashSet<>();
-        this.soundTracks = new THashMap<>();
+        this.items = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
+        this.crackableRewards = new Int2ObjectOpenHashMap<>();
+        this.interactionsList = new HashSet<>();
+        this.soundTracks = new HashMap<>();
         this.youtubeManager = new YoutubeManager();
         this.highscoreManager = new WiredHighscoreManager();
         this.newuserGifts = new TreeMap<>();
@@ -566,6 +563,10 @@ public class ItemManager {
 
 
     public int calculateCrackState(int count, int max, Item baseItem) {
+        if (count <= 0 || max <= 0 || baseItem == null || baseItem.getStateCount() <= 0) {
+            return 0;
+        }
+
         return (int) Math.floor((1.0D / ((double) max / (double) count) * baseItem.getStateCount()));
     }
 
@@ -574,7 +575,8 @@ public class ItemManager {
     }
 
     public Item getCrackableReward(int itemId) {
-        return this.getItem(this.crackableRewards.get(itemId).getRandomReward());
+        CrackableReward reward = this.crackableRewards.get(itemId);
+        return reward == null ? null : this.getItem(reward.getRandomReward());
     }
 
 
@@ -604,6 +606,12 @@ public class ItemManager {
     }
 
     public HabboItem createItem(int habboId, Item item, int limitedStack, int limitedSells, String extraData) {
+        if (habboId <= 0 || item == null) {
+            return null;
+        }
+
+        extraData = ItemDataGuard.normalizeExtraData(extraData);
+
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("INSERT INTO items (user_id, item_id, extra_data, limited_data) VALUES (?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS)) {
             statement.setInt(1, habboId);
             statement.setInt(2, item.getId());
@@ -673,6 +681,12 @@ public class ItemManager {
     }
 
     public HabboItem handleRecycle(Habbo habbo, String itemId) {
+        int rewardItemId = ItemDataGuard.parsePositiveInt(itemId);
+        if (habbo == null || habbo.getHabboInfo() == null || rewardItemId <= 0
+                || Emulator.getGameEnvironment().getCatalogManager().ecotronItem == null) {
+            return null;
+        }
+
         String extradata = Calendar.getInstance().get(Calendar.DAY_OF_MONTH) + "-" + (Calendar.getInstance().get(Calendar.MONTH) + 1) + "-" + Calendar.getInstance().get(Calendar.YEAR);
 
         HabboItem item = null;
@@ -686,7 +700,7 @@ public class ItemManager {
                 try (PreparedStatement preparedStatement = connection.prepareStatement("INSERT INTO items_presents (item_id, base_item_reward) VALUES (?, ?)")) {
                     while (set.next() && item == null) {
                         preparedStatement.setInt(1, set.getInt(1));
-                        preparedStatement.setInt(2, Integer.parseInt(itemId));
+                        preparedStatement.setInt(2, rewardItemId);
                         preparedStatement.addBatch();
                         item = new InteractionDefault(set.getInt(1), habbo.getHabboInfo().getId(), Emulator.getGameEnvironment().getCatalogManager().ecotronItem, extradata, 0, 0);
                     }
@@ -829,6 +843,10 @@ public class ItemManager {
     }
 
     public HabboItem createGift(String username, Item item, String extraData, int limitedStack, int limitedSells) {
+        if (username == null || username.isBlank() || item == null) {
+            return null;
+        }
+
         Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(username);
 
         int userId = 0;
@@ -857,13 +875,13 @@ public class ItemManager {
     }
 
     public HabboItem createGift(int userId, Item item, String extraData, int limitedStack, int limitedSells) {
-        if (userId == 0)
+        if (userId <= 0 || item == null)
             return null;
 
-        if (extraData.length() > 1000) {
+        if (extraData != null && extraData.length() > ItemDataGuard.MAX_EXTRA_DATA_LENGTH) {
             LOGGER.error("Extradata exceeds maximum length of 1000 characters: {}", extraData);
-            extraData = extraData.substring(0, 1000);
         }
+        extraData = ItemDataGuard.normalizeExtraData(extraData);
 
         HabboItem gift = this.createItem(userId, item, limitedStack, limitedSells, extraData);
 
@@ -879,27 +897,26 @@ public class ItemManager {
     }
 
     public Item getItem(int itemId) {
-        if (itemId < 0)
+        if (itemId <= 0)
             return null;
 
         return this.items.get(itemId);
     }
 
-    public TIntObjectMap<Item> getItems() {
+    public Int2ObjectMap<Item> getItems() {
         return this.items;
     }
 
     public Item getItem(String itemName) {
-        TIntObjectIterator<Item> item = this.items.iterator();
+        if (itemName == null || itemName.isBlank()) {
+            return null;
+        }
 
-        for (int i = this.items.size(); i-- > 0; ) {
-            try {
-                item.advance();
-                if (item.value().getName().equalsIgnoreCase(itemName)) {
-                    return item.value();
+        synchronized (this.items) {
+            for (Item item : this.items.values()) {
+                if (item != null && item.getName() != null && item.getName().equalsIgnoreCase(itemName)) {
+                    return item;
                 }
-            } catch (NoSuchElementException e) {
-                break;
             }
         }
 

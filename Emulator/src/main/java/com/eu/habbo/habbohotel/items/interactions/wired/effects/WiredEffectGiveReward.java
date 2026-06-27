@@ -19,7 +19,6 @@ import com.eu.habbo.habbohotel.wired.core.WiredSourceUtil;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 import com.eu.habbo.messages.outgoing.generic.alerts.UpdateFailedComposer;
-import gnu.trove.procedure.TObjectProcedure;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -165,15 +164,11 @@ public class WiredEffectGiveReward extends InteractionWiredEffect {
 
         if (this.requiresTriggeringUser()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredTrigger>() {
-                @Override
-                public boolean execute(InteractionWiredTrigger object) {
-                    if (!object.isTriggeredByRoomUnit()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredTrigger object : room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY())) {
+                if (!object.isTriggeredByRoomUnit()) {
+                    invalidTriggers.add(object.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -202,12 +197,15 @@ public class WiredEffectGiveReward extends InteractionWiredEffect {
 
             int i = 1;
             for (String s : items) {
-                String[] d = s.split(",");
+                String[] d = s.split(",", -1);
 
                 if (d.length == 3) {
                     if (!(d[1].contains(":") || d[1].contains(";"))) {
-                        this.rewardItems.add(new WiredGiveRewardItem(i, d[0].equalsIgnoreCase("0"), d[1], Integer.parseInt(d[2])));
-                        continue;
+                        try {
+                            this.rewardItems.add(new WiredGiveRewardItem(i, d[0].equalsIgnoreCase("0"), d[1], Integer.parseInt(d[2].trim())));
+                            continue;
+                        } catch (IllegalArgumentException ignored) {
+                        }
                     }
                 }
 

@@ -25,15 +25,16 @@ import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredSourceUtil;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
-import gnu.trove.procedure.TObjectProcedure;
-import gnu.trove.set.hash.THashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class WiredEffectToggleRandom extends InteractionWiredEffect {
@@ -41,7 +42,7 @@ public class WiredEffectToggleRandom extends InteractionWiredEffect {
 
     public static final WiredEffectType type = WiredEffectType.TOGGLE_RANDOM;
 
-    private final THashSet<HabboItem> items = new THashSet<>();
+    private final Set<HabboItem> items = new LinkedHashSet<>();
     private int furniSource = WiredSourceUtil.SOURCE_TRIGGER;
 
     private static final List<Class<? extends HabboItem>> FORBIDDEN_TYPES = new ArrayList<Class<? extends HabboItem>>() {
@@ -95,7 +96,7 @@ public class WiredEffectToggleRandom extends InteractionWiredEffect {
     @Override
     public void serializeWiredData(ServerMessage message, Room room) {
         List<HabboItem> itemsSnapshot = new ArrayList<>(this.items);
-        THashSet<HabboItem> items = new THashSet<>();
+        Set<HabboItem> items = new HashSet<>();
 
         for (HabboItem item : itemsSnapshot) {
             if (item.getRoomId() != this.getRoomId() || Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId()).getHabboItem(item.getId()) == null)
@@ -124,15 +125,11 @@ public class WiredEffectToggleRandom extends InteractionWiredEffect {
 
         if (this.requiresTriggeringUser()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredTrigger>() {
-                @Override
-                public boolean execute(InteractionWiredTrigger object) {
-                    if (!object.isTriggeredByRoomUnit()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredTrigger object : room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY())) {
+                if (!object.isTriggeredByRoomUnit()) {
+                    invalidTriggers.add(object.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -230,13 +227,14 @@ public class WiredEffectToggleRandom extends InteractionWiredEffect {
         this.items.clear();
         String wiredData = set.getString("wired_data");
 
-        if (wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
-            this.setDelay(data.delay);
-            this.furniSource = data.furniSource;
-            for (Integer id: data.itemIds) {
+        JsonData jsonData = WiredMovementPayloadGuard.fromJson(wiredData, JsonData.class);
+        if (jsonData != null) {
+            this.setDelay(WiredMovementPayloadGuard.delay(jsonData.delay));
+            this.furniSource = WiredMovementPayloadGuard.furniSource(jsonData.furniSource);
+            if (jsonData.itemIds != null) for (Integer id: jsonData.itemIds) {
+                if (id == null) continue;
                 HabboItem item = room.getHabboItem(id);
-                
+
                 if (item instanceof InteractionFreezeBlock || item instanceof InteractionGameTimer || item instanceof InteractionCrackable)
                     continue;
 
@@ -247,15 +245,16 @@ public class WiredEffectToggleRandom extends InteractionWiredEffect {
                 this.furniSource = WiredSourceUtil.SOURCE_SELECTED;
             }
         } else {
-            String[] wiredDataOld = wiredData.split("\t");
+            String[] wiredDataOld = wiredData != null ? wiredData.split("\t") : new String[0];
 
             if (wiredDataOld.length >= 1) {
-                this.setDelay(Integer.parseInt(wiredDataOld[0]));
+                this.setDelay(WiredMovementPayloadGuard.parseDelay(wiredDataOld[0]));
             }
             if (wiredDataOld.length == 2) {
                 if (wiredDataOld[1].contains(";")) {
                     for (String s : wiredDataOld[1].split(";")) {
-                        HabboItem item = room.getHabboItem(Integer.parseInt(s));
+                        int itemId = WiredMovementPayloadGuard.parseInt(s, 0);
+                        HabboItem item = itemId > 0 ? room.getHabboItem(itemId) : null;
 
                         if (item instanceof InteractionFreezeBlock || item instanceof InteractionGameTimer || item instanceof InteractionCrackable)
                             continue;

@@ -5,6 +5,7 @@ import com.eu.habbo.habbohotel.gameclients.GameClient;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredTrigger;
+import com.eu.habbo.habbohotel.items.interactions.wired.WiredLegacyDataGuard;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
 import com.eu.habbo.habbohotel.pets.RideablePet;
 import com.eu.habbo.habbohotel.rooms.*;
@@ -20,14 +21,14 @@ import com.eu.habbo.messages.outgoing.rooms.users.RoomUserEffectComposer;
 import com.eu.habbo.messages.outgoing.rooms.users.RoomUserStatusComposer;
 import com.eu.habbo.threading.runnables.RoomUnitTeleport;
 import com.eu.habbo.threading.runnables.SendRoomUnitEffectComposer;
-import gnu.trove.procedure.TObjectProcedure;
-import gnu.trove.set.hash.THashSet;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class WiredEffectTeleport extends InteractionWiredEffect {
@@ -118,7 +119,7 @@ public class WiredEffectTeleport extends InteractionWiredEffect {
     @Override
     public void serializeWiredData(ServerMessage message, Room room) {
         List<HabboItem> itemsSnapshot = new ArrayList<>(this.items);
-        THashSet<HabboItem> items = new THashSet<>();
+        Set<HabboItem> items = new HashSet<>();
 
         for (HabboItem item : itemsSnapshot) {
             if (item.getRoomId() != this.getRoomId() || Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId()).getHabboItem(item.getId()) == null)
@@ -147,15 +148,11 @@ public class WiredEffectTeleport extends InteractionWiredEffect {
         message.appendInt(this.getDelay());
         if (this.requiresTriggeringUser()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredTrigger>() {
-                @Override
-                public boolean execute(InteractionWiredTrigger object) {
-                    if (!object.isTriggeredByRoomUnit()) {
-                        invalidTriggers.add(object.getId());
-                    }
-                    return true;
+            for (InteractionWiredTrigger object : room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY())) {
+                if (!object.isTriggeredByRoomUnit()) {
+                    invalidTriggers.add(object.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -268,35 +265,33 @@ public class WiredEffectTeleport extends InteractionWiredEffect {
         this.items = new ArrayList<>();
         String wiredData = set.getString("wired_data");
 
-        if (wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
-            this.setDelay(data.delay);
-            this.fastTeleport = data.fastTeleport;
-            this.furniSource = data.furniSource;
-            this.userSource = data.userSource;
-            for (Integer id: data.itemIds) {
-                HabboItem item = room.getHabboItem(id);
-                if (item != null) {
-                    this.items.add(item);
+        JsonData jsonData = WiredMovementPayloadGuard.fromJson(wiredData, JsonData.class);
+        if (jsonData != null) {
+            this.setDelay(WiredMovementPayloadGuard.delay(jsonData.delay));
+            this.fastTeleport = jsonData.fastTeleport;
+            this.furniSource = WiredMovementPayloadGuard.furniSource(jsonData.furniSource);
+            this.userSource = WiredMovementPayloadGuard.userSource(jsonData.userSource);
+            if (jsonData.itemIds != null) {
+                for (Integer id: jsonData.itemIds) {
+                    if (id == null) continue;
+                    HabboItem item = room.getHabboItem(id);
+                    if (item != null) {
+                        this.items.add(item);
+                    }
                 }
             }
             if (this.furniSource == WiredSourceUtil.SOURCE_TRIGGER && !this.items.isEmpty()) {
                 this.furniSource = WiredSourceUtil.SOURCE_SELECTED;
             }
         } else {
-            String[] wiredDataOld = wiredData.split("\t");
+            String[] wiredDataOld = wiredData != null ? wiredData.split("\t") : new String[0];
 
             if (wiredDataOld.length >= 1) {
-                this.setDelay(Integer.parseInt(wiredDataOld[0]));
+                this.setDelay(WiredLegacyDataGuard.parseDelay(wiredDataOld[0]));
             }
             if (wiredDataOld.length == 2) {
                 if (wiredDataOld[1].contains(";")) {
-                    for (String s : wiredDataOld[1].split(";")) {
-                        HabboItem item = room.getHabboItem(Integer.parseInt(s));
-
-                        if (item != null)
-                            this.items.add(item);
-                    }
+                    this.items.addAll(WiredLegacyDataGuard.parseRoomItems(wiredDataOld[1], room));
                 }
             }
             this.fastTeleport = false;

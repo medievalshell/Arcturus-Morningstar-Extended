@@ -4,6 +4,7 @@ import com.eu.habbo.Emulator;
 import com.eu.habbo.database.SqlQueries;
 import com.eu.habbo.habbohotel.guilds.Guild;
 import com.eu.habbo.habbohotel.guilds.GuildMember;
+import com.eu.habbo.habbohotel.guilds.GuildMembershipStatus;
 import com.eu.habbo.habbohotel.guilds.GuildRank;
 import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.habbohotel.users.Habbo;
@@ -16,9 +17,12 @@ import com.eu.habbo.messages.outgoing.rooms.users.RoomUserUnbannedComposer;
 import com.eu.habbo.habbohotel.messenger.MessengerBuddy;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.plugin.events.users.UserRightsTakenEvent;
-import gnu.trove.list.array.TIntArrayList;
-import gnu.trove.map.hash.TIntIntHashMap;
-import gnu.trove.map.hash.TIntObjectHashMap;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+import it.unimi.dsi.fastutil.ints.IntSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,15 +41,15 @@ public class RoomRightsManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(RoomRightsManager.class);
 
     private final Room room;
-    private final TIntArrayList rights;
-    private final TIntObjectHashMap<RoomBan> bannedHabbos;
-    private final TIntIntHashMap mutedHabbos;
+    private final IntSet rights;
+    private final Int2ObjectMap<RoomBan> bannedHabbos;
+    private final Int2IntMap mutedHabbos;
 
     public RoomRightsManager(Room room) {
         this.room = room;
-        this.rights = new TIntArrayList();
-        this.bannedHabbos = new TIntObjectHashMap<>();
-        this.mutedHabbos = new TIntIntHashMap();
+        this.rights = new IntOpenHashSet();
+        this.bannedHabbos = new Int2ObjectOpenHashMap<>();
+        this.mutedHabbos = new Int2IntOpenHashMap();
     }
 
     /**
@@ -108,7 +112,8 @@ public class RoomRightsManager {
                 return RoomRightLevels.GUILD_ADMIN;
             }
 
-            if (guild.getRights()) {
+            if ((member != null) && member.getMembershipStatus() == GuildMembershipStatus.MEMBER
+                && guild.getRights()) {
                 return RoomRightLevels.GUILD_RIGHTS;
             }
         }
@@ -225,7 +230,7 @@ public class RoomRightsManager {
      * Removes all rights from the room.
      */
     public void removeAllRights() {
-        for (int userId : rights.toArray()) {
+        for (int userId : rights) {
             this.room.getItemManager().ejectUserFurni(userId);
         }
 
@@ -272,10 +277,16 @@ public class RoomRightsManager {
         } else if (this.isOwner(habbo)) {
             habbo.getClient().sendResponse(new RoomOwnerComposer());
             flatCtrl = RoomRightLevels.MODERATOR;
-        } else if (this.hasRights(habbo) && !this.room.hasGuild()) {
-            flatCtrl = RoomRightLevels.RIGHTS;
         } else if (this.room.hasGuild()) {
-            flatCtrl = this.getGuildRightLevel(habbo);
+            // Explicit room rights must still be honoured in guild rooms (the old
+            // `&& !hasGuild()` guard stripped them for non-guild members) — take
+            // whichever of the two is stronger.
+            RoomRightLevels guildLevel = this.getGuildRightLevel(habbo);
+            flatCtrl = (this.hasRights(habbo) && RoomRightLevels.RIGHTS.isEqualOrGreaterThan(guildLevel))
+                    ? RoomRightLevels.RIGHTS
+                    : guildLevel;
+        } else if (this.hasRights(habbo)) {
+            flatCtrl = RoomRightLevels.RIGHTS;
         }
 
         habbo.getClient().sendResponse(new RoomRightsComposer(flatCtrl));
@@ -342,7 +353,7 @@ public class RoomRightsManager {
     /**
      * Gets all banned users.
      */
-    public TIntObjectHashMap<RoomBan> getBannedHabbos() {
+    public Int2ObjectMap<RoomBan> getBannedHabbos() {
         return this.bannedHabbos;
     }
 
@@ -395,14 +406,14 @@ public class RoomRightsManager {
     /**
      * Gets the rights list.
      */
-    public TIntArrayList getRights() {
+    public IntSet getRights() {
         return this.rights;
     }
 
     /**
      * Gets the muted habbos map.
      */
-    public TIntIntHashMap getMutedHabbos() {
+    public Int2IntMap getMutedHabbos() {
         return this.mutedHabbos;
     }
 

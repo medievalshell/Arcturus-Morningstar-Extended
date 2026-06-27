@@ -13,17 +13,25 @@ import com.eu.habbo.messages.outgoing.inventory.AddHabboItemComposer;
 import com.eu.habbo.messages.outgoing.inventory.InventoryRefreshComposer;
 import com.eu.habbo.messages.outgoing.inventory.RemoveHabboItemComposer;
 import com.eu.habbo.threading.runnables.QueryDeleteHabboItem;
-import gnu.trove.map.hash.THashMap;
-import gnu.trove.set.hash.THashSet;
 
+import java.util.HashMap;
+import java.util.Collections;
 import java.util.Map;
+import java.util.IdentityHashMap;
 import java.util.Set;
 
 public class CraftingCraftSecretEvent extends MessageHandler {
+    static final int MAX_SECRET_CRAFT_INGREDIENTS = 50;
+
     @Override
     public void handle() throws Exception {
         int altarId = this.packet.readInt();
         int count = this.packet.readInt();
+
+        if (count <= 0 || count > MAX_SECRET_CRAFT_INGREDIENTS) {
+            this.client.sendResponse(new CraftingResultComposer(null));
+            return;
+        }
 
         HabboItem craftingAltar = this.client.getHabbo().getHabboInfo().getCurrentRoom().getHabboItem(altarId);
 
@@ -31,18 +39,17 @@ public class CraftingCraftSecretEvent extends MessageHandler {
             CraftingAltar altar = Emulator.getGameEnvironment().getCraftingManager().getAltar(craftingAltar.getBaseItem());
 
             if (altar != null) {
-                Set<HabboItem> habboItems = new THashSet<>();
-                Map<Item, Integer> items = new THashMap<>();
+                Set<HabboItem> habboItems = Collections.newSetFromMap(new IdentityHashMap<>());
+                Map<Item, Integer> items = new HashMap<>();
 
                 for (int i = 0; i < count; i++) {
-                    HabboItem habboItem = this.client.getHabbo().getInventory().getItemsComponent().getHabboItem(this.packet.readInt());
+                    int itemId = this.packet.readInt();
+                    HabboItem habboItem = this.client.getHabbo().getInventory().getItemsComponent().getHabboItem(itemId);
 
-                    if (habboItem == null) {
+                    if (habboItem == null || !habboItems.add(habboItem)) {
                         this.client.sendResponse(new CraftingResultComposer(null));
                         return;
                     }
-
-                    habboItems.add(habboItem);
 
                     if (!items.containsKey(habboItem.getBaseItem())) {
                         items.put(habboItem.getBaseItem(), 0);

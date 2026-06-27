@@ -4,6 +4,7 @@ import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredTrigger;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
+import com.eu.habbo.habbohotel.items.interactions.wired.WiredTimerInputGuard;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredTriggerReset;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
@@ -13,7 +14,6 @@ import com.eu.habbo.habbohotel.wired.core.WiredEvent;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.tick.WiredTickable;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.procedure.TObjectProcedure;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -30,6 +30,9 @@ import java.util.List;
 public class WiredTriggerRepeater extends InteractionWiredTrigger implements WiredTickable, WiredTriggerReset {
     public static final WiredTriggerType type = WiredTriggerType.PERIODICALLY;
     public static final int DEFAULT_DELAY = 10 * 500; // 5 seconds default
+    private static final int STEP_MS = 500;
+    private static final int MIN_DELAY = STEP_MS;
+    private static final int LEGACY_FALLBACK_DELAY = 20 * STEP_MS;
 
     /** The interval in milliseconds between triggers */
     protected int repeatTime = DEFAULT_DELAY;
@@ -63,18 +66,19 @@ public class WiredTriggerRepeater extends InteractionWiredTrigger implements Wir
     public void loadWiredData(ResultSet set, Room room) throws SQLException {
         String wiredData = set.getString("wired_data");
 
-        if (wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
-            this.repeatTime = data.repeatTime;
-        } else {
-            if (wiredData.length() >= 1) {
-                this.repeatTime = (Integer.parseInt(wiredData));
+        Integer storedRepeatTime = null;
+        try {
+            if (wiredData != null && wiredData.startsWith("{")) {
+                JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+                storedRepeatTime = data != null ? data.repeatTime : null;
+            } else if (wiredData != null && wiredData.length() >= 1) {
+                storedRepeatTime = Integer.parseInt(wiredData);
             }
+        } catch (RuntimeException ignored) {
+            storedRepeatTime = null;
         }
 
-        if (this.repeatTime < 500) {
-            this.repeatTime = 20 * 500;
-        }
+        this.repeatTime = WiredTimerInputGuard.normalizeStoredMillis(storedRepeatTime, MIN_DELAY, LEGACY_FALLBACK_DELAY);
     }
 
     @Override
@@ -102,15 +106,11 @@ public class WiredTriggerRepeater extends InteractionWiredTrigger implements Wir
 
         if (!this.isTriggeredByRoomUnit()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getEffects(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredEffect>() {
-                @Override
-                public boolean execute(InteractionWiredEffect object) {
-                    if (object.requiresTriggeringUser()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredEffect effect : room.getRoomSpecialTypes().getEffects(this.getX(), this.getY())) {
+                if (effect.requiresTriggeringUser()) {
+                    invalidTriggers.add(effect.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -123,13 +123,7 @@ public class WiredTriggerRepeater extends InteractionWiredTrigger implements Wir
     @Override
     public boolean saveData(WiredSettings settings) {
         if (settings.getIntParams().length < 1) return false;
-        int newRepeatTime = settings.getIntParams()[0] * 500;
-
-        if (newRepeatTime < 500) {
-            newRepeatTime = 500;
-        }
-
-        this.repeatTime = newRepeatTime;
+        this.repeatTime = WiredTimerInputGuard.fromClientUnits(settings.getIntParams()[0], STEP_MS, MIN_DELAY);
 
         return true;
     }

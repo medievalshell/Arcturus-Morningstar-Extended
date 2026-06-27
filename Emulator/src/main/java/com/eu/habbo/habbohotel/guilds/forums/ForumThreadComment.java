@@ -7,16 +7,17 @@ import com.eu.habbo.messages.ISerialize;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.plugin.events.guilds.forums.GuildForumThreadCommentBeforeCreated;
 import com.eu.habbo.plugin.events.guilds.forums.GuildForumThreadCommentCreated;
-import gnu.trove.map.hash.THashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class ForumThreadComment implements Runnable, ISerialize {
     private static final Logger LOGGER = LoggerFactory.getLogger(ForumThreadComment.class);
 
-    private static final THashMap<Integer, ForumThreadComment> forumCommentsCache = new THashMap<>();
+    private static final Map<Integer, ForumThreadComment> forumCommentsCache = new HashMap<>();
     private final int commentId;
     private final int threadId;
     private final int userId;
@@ -98,12 +99,13 @@ public class ForumThreadComment implements Runnable, ISerialize {
             if (statement.executeUpdate() < 1)
                 return null;
 
-            ResultSet set = statement.getGeneratedKeys();
-            if (set.next()) {
-                int commentId = set.getInt(1);
-                createdComment = new ForumThreadComment(commentId, thread.getThreadId(), poster.getHabboInfo().getId(), message, timestamp, ForumThreadState.OPEN, 0);
+            try (ResultSet set = statement.getGeneratedKeys()) {
+                if (set.next()) {
+                    int commentId = set.getInt(1);
+                    createdComment = new ForumThreadComment(commentId, thread.getThreadId(), poster.getHabboInfo().getId(), message, timestamp, ForumThreadState.OPEN, 0);
 
-                Emulator.getPluginManager().fireEvent(new GuildForumThreadCommentCreated(createdComment));
+                    Emulator.getPluginManager().fireEvent(new GuildForumThreadCommentCreated(createdComment));
+                }
             }
         } catch (SQLException e) {
             LOGGER.error("Caught SQL exception", e);

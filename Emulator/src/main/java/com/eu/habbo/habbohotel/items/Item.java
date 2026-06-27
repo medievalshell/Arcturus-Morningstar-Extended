@@ -5,7 +5,7 @@ import com.eu.habbo.habbohotel.items.interactions.InteractionMultiHeight;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.messages.ISerialize;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.list.array.TIntArrayList;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -32,7 +32,7 @@ public class Item implements ISerialize {
     private short stateCount;
     private short effectM;
     private short effectF;
-    private TIntArrayList vendingItems;
+    private IntArrayList vendingItems;
     private double[] multiHeights;
     private String customParams;
     private String clothingOnWalk;
@@ -45,7 +45,7 @@ public class Item implements ISerialize {
     }
 
     public static boolean isPet(Item item) {
-        return item.getName().toLowerCase().startsWith("a0 pet");
+        return item != null && item.getName() != null && item.getName().toLowerCase().startsWith("a0 pet");
     }
 
     public static boolean isBot(Item item) {
@@ -121,26 +121,19 @@ public class Item implements ISerialize {
         this.customParams = set.getString("customparams");
         this.clothingOnWalk = set.getString("clothing_on_walk");
 
-        if (!set.getString("vending_ids").isEmpty()) {
-            this.vendingItems = new TIntArrayList();
-            String[] vendingIds = set.getString("vending_ids").replace(";", ",").split(",");
-            for (String s : vendingIds) {
-                this.vendingItems.add(Integer.parseInt(s.replace(" ", "")));
+        int[] vendingIds = ItemDataGuard.parsePositiveIntList(set.getString("vending_ids"));
+        if (vendingIds.length > 0) {
+            this.vendingItems = new IntArrayList();
+            for (int vendingId : vendingIds) {
+                this.vendingItems.add(vendingId);
             }
+        } else {
+            this.vendingItems = new IntArrayList();
         }
 
         //if(this.interactionType.getType() == InteractionMultiHeight.class || this.interactionType.getType().isAssignableFrom(InteractionMultiHeight.class))
         {
-            if (set.getString("multiheight").contains(";")) {
-                String[] s = set.getString("multiheight").split(";");
-                this.multiHeights = new double[s.length];
-
-                for (int i = 0; i < s.length; i++) {
-                    this.multiHeights[i] = Double.parseDouble(s[i]);
-                }
-            } else {
-                this.multiHeights = new double[0];
-            }
+            this.multiHeights = ItemDataGuard.parseHeights(set.getString("multiheight"));
         }
 
         this.rotations = 4;
@@ -249,11 +242,15 @@ public class Item implements ISerialize {
         return this.interactionType;
     }
 
-    public TIntArrayList getVendingItems() {
+    public IntArrayList getVendingItems() {
         return this.vendingItems;
     }
 
     public int getRandomVendingItem() {
+        if (this.vendingItems == null || this.vendingItems.isEmpty()) {
+            return 0;
+        }
+
         return this.vendingItems.get(Emulator.getRandom().nextInt(this.vendingItems.size()));
     }
 
@@ -273,21 +270,23 @@ public class Item implements ISerialize {
 
     @Override
     public void serialize(ServerMessage message) {
-        message.appendString(this.type.code.toLowerCase());
+        message.appendString(this.type == null ? "" : this.type.code.toLowerCase());
 
         if (type == FurnitureType.BADGE) {
-            message.appendString(this.customParams);
+            message.appendString(ItemDataGuard.safeString(this.customParams));
         } else {
             message.appendInt(this.spriteId);
 
-            if (this.getName().contains("wallpaper_single") || this.getName().contains("floor_single") || this.getName().contains("landscape_single")) {
-                message.appendString(this.name.split("_")[2]);
+            String itemName = ItemDataGuard.safeString(this.getName());
+            if (itemName.contains("wallpaper_single") || itemName.contains("floor_single") || itemName.contains("landscape_single")) {
+                String[] nameParts = itemName.split("_");
+                message.appendString(nameParts.length > 2 ? nameParts[2] : "");
             } else if (type == FurnitureType.ROBOT) {
-                message.appendString(this.customParams);
-            } else if (name.equalsIgnoreCase("poster")) {
-                message.appendString(this.customParams);
-            } else if (name.startsWith("SONG ")) {
-                message.appendString(this.customParams);
+                message.appendString(ItemDataGuard.safeString(this.customParams));
+            } else if (itemName.equalsIgnoreCase("poster")) {
+                message.appendString(ItemDataGuard.safeString(this.customParams));
+            } else if (itemName.startsWith("SONG ")) {
+                message.appendString(ItemDataGuard.safeString(this.customParams));
             } else {
                 message.appendString("");
             }

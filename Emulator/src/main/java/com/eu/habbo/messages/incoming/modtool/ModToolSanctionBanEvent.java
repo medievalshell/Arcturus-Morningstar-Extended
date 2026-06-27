@@ -8,9 +8,9 @@ import com.eu.habbo.habbohotel.modtool.ModToolSanctions;
 import com.eu.habbo.habbohotel.modtool.ScripterManager;
 import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.messages.incoming.MessageHandler;
-import gnu.trove.map.hash.THashMap;
 
 import java.util.ArrayList;
+import java.util.Map;
 
 public class ModToolSanctionBanEvent extends MessageHandler {
     @Override
@@ -30,12 +30,16 @@ public class ModToolSanctionBanEvent extends MessageHandler {
     @Override
     public void handle() throws Exception {
         int userId = this.packet.readInt();
-        String message = this.packet.readString();
+        String message = ModToolInputGuard.normalize(this.packet.readString());
         int cfhTopic = this.packet.readInt();
         int banType = this.packet.readInt();
         this.packet.readBoolean();
 
         int duration = 0;
+
+        if (!ModToolTicketGuard.isPositiveId(userId) || !ModToolTicketGuard.isPositiveId(cfhTopic) || !ModToolInputGuard.isSafeMessage(message)) {
+            return;
+        }
 
         switch (banType) {
             case BAN_18_HOURS:
@@ -56,7 +60,7 @@ public class ModToolSanctionBanEvent extends MessageHandler {
             ModToolSanctions modToolSanctions = Emulator.getGameEnvironment().getModToolSanctions();
 
             if (Emulator.getConfig().getBoolean("hotel.sanctions.enabled")) {
-                THashMap<Integer, ArrayList<ModToolSanctionItem>> modToolSanctionItemsHashMap = Emulator.getGameEnvironment().getModToolSanctions().getSanctions(userId);
+                Map<Integer, ArrayList<ModToolSanctionItem>> modToolSanctionItemsHashMap = Emulator.getGameEnvironment().getModToolSanctions().getSanctions(userId);
                 ArrayList<ModToolSanctionItem> modToolSanctionItems = modToolSanctionItemsHashMap.get(userId);
 
                 if (modToolSanctionItems != null && !modToolSanctionItemsHashMap.isEmpty()) {

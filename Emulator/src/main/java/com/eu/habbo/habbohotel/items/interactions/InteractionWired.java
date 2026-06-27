@@ -2,6 +2,7 @@ package com.eu.habbo.habbohotel.items.interactions;
 
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.items.Item;
+import com.eu.habbo.habbohotel.items.interactions.wired.WiredInputGuard;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
@@ -18,6 +19,7 @@ import java.sql.SQLException;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Base abstract class for all wired furniture items (triggers, effects, conditions, extras).
@@ -61,7 +63,11 @@ public abstract class InteractionWired extends InteractionDefault {
      */
     private static final long CACHE_EXPIRY_MS = 5 * 60 * 1000;
     
-    private long cooldown;
+    private volatile long cooldown;
+    // Ensures one box is processed by a single thread at a time, so the
+    // cooldown check-and-set in WiredHandler can't double-fire when a packet
+    // thread and the room cycle thread trigger the same box concurrently.
+    private final AtomicBoolean processing = new AtomicBoolean(false);
     private final ConcurrentHashMap<Long, Long> userExecutionCache = new ConcurrentHashMap<>();
 
     InteractionWired(ResultSet set, Item baseItem) throws SQLException {
@@ -149,6 +155,15 @@ public abstract class InteractionWired extends InteractionDefault {
         this.cooldown = newMillis;
     }
 
+    /** Claims exclusive processing of this box; returns false if another thread is already in it. */
+    public boolean tryBeginProcessing() {
+        return this.processing.compareAndSet(false, true);
+    }
+
+    public void endProcessing() {
+        this.processing.set(false);
+    }
+
     @Override
     public boolean allowWiredResetState() {
         return false;
@@ -216,39 +231,18 @@ public abstract class InteractionWired extends InteractionDefault {
 
     public static WiredSettings readSettings(ClientMessage packet, boolean isEffect)
     {
-        int intParamCount = packet.readInt();
-        if (intParamCount < 0 || intParamCount > 100) {
-            throw new IllegalArgumentException("Invalid intParamCount: " + intParamCount);
-        }
-        int[] intParams = new int[intParamCount];
-
-        for(int i = 0; i < intParamCount; i++)
-        {
-            intParams[i] = packet.readInt();
-        }
-
-        String stringParam = packet.readString();
-
-        int itemCount = packet.readInt();
-        int selectionLimit = Emulator.getConfig() != null ? Emulator.getConfig().getInt("hotel.wired.furni.selection.count", 5) : 5;
-        if (itemCount < 0 || itemCount > selectionLimit * 20) {
-            throw new IllegalArgumentException("Invalid itemCount: " + itemCount + " exceeds maximum allowed limit");
-        }
-        int[] itemIds = new int[itemCount];
-
-        for(int i = 0; i < itemCount; i++)
-        {
-            itemIds[i] = packet.readInt();
-        }
+        int[] intParams = WiredInputGuard.readIntParams(packet);
+        String stringParam = WiredInputGuard.readStringParam(packet);
+        int[] itemIds = WiredInputGuard.readFurniIds(packet);
 
         WiredSettings settings = new WiredSettings(intParams, stringParam, itemIds, -1);
 
         if(isEffect)
         {
-            settings.setDelay(packet.readInt());
+            settings.setDelay(WiredInputGuard.normalizeDelay(packet.readInt()));
         }
 
-        settings.setStuffTypeSelectionCode(packet.readInt());
+        settings.setStuffTypeSelectionCode(WiredInputGuard.normalizeStuffSelectionCode(packet.readInt()));
         return settings;
     }
 }

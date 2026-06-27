@@ -8,9 +8,9 @@ import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.modtool.ModToolIssueHandledComposer;
-import gnu.trove.map.hash.THashMap;
 
 import java.util.ArrayList;
+import java.util.Map;
 
 public class ModToolSanctionTradeLockEvent extends MessageHandler {
     @Override
@@ -21,18 +21,26 @@ public class ModToolSanctionTradeLockEvent extends MessageHandler {
     @Override
     public void handle() throws Exception {
         int userId = this.packet.readInt();
-        String message = this.packet.readString();
+        String message = ModToolInputGuard.normalize(this.packet.readString());
         int duration = this.packet.readInt();
         int cfhTopic = this.packet.readInt();
+
+        if (!ModToolTicketGuard.isPositiveId(userId) || !ModToolTicketGuard.isPositiveId(cfhTopic) || !ModToolInputGuard.isSafeMessage(message)) {
+            return;
+        }
 
         if (this.client.getHabbo().hasPermission(Permission.ACC_SUPPORTTOOL)) {
             Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
 
             if (habbo != null) {
+                if (!ModToolManager.canModerateTarget(this.client.getHabbo(), userId)) {
+                    return;
+                }
+
                 ModToolSanctions modToolSanctions = Emulator.getGameEnvironment().getModToolSanctions();
 
                 if (Emulator.getConfig().getBoolean("hotel.sanctions.enabled")) {
-                    THashMap<Integer, ArrayList<ModToolSanctionItem>> modToolSanctionItemsHashMap = Emulator.getGameEnvironment().getModToolSanctions().getSanctions(userId);
+                    Map<Integer, ArrayList<ModToolSanctionItem>> modToolSanctionItemsHashMap = Emulator.getGameEnvironment().getModToolSanctions().getSanctions(userId);
                     ArrayList<ModToolSanctionItem> modToolSanctionItems = modToolSanctionItemsHashMap.get(userId);
 
                     if (modToolSanctionItems != null && !modToolSanctionItems.isEmpty()) {

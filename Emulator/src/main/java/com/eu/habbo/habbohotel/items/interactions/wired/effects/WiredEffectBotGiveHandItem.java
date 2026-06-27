@@ -19,7 +19,6 @@ import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 import com.eu.habbo.threading.runnables.RoomUnitGiveHanditem;
 import com.eu.habbo.threading.runnables.RoomUnitWalkToLocation;
-import gnu.trove.procedure.TObjectProcedure;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -61,15 +60,11 @@ public class WiredEffectBotGiveHandItem extends InteractionWiredEffect {
 
         if (this.requiresTriggeringUser()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredTrigger>() {
-                @Override
-                public boolean execute(InteractionWiredTrigger object) {
-                    if (!object.isTriggeredByRoomUnit()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredTrigger object : room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY())) {
+                if (!object.isTriggeredByRoomUnit()) {
+                    invalidTriggers.add(object.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -153,23 +148,23 @@ public class WiredEffectBotGiveHandItem extends InteractionWiredEffect {
     public void loadWiredData(ResultSet set, Room room) throws SQLException {
         String wiredData = set.getString("wired_data");
 
-        if(wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
-            this.setDelay(data.delay);
-            this.itemId = this.normalizeHandItem(data.item_id);
-            this.botName = data.bot_name;
-            this.userSource = this.normalizeUserSource(data.userSource);
-            this.botSource = ((data.botSource == WiredSourceUtil.SOURCE_TRIGGER) && this.botName != null && !this.botName.isEmpty())
+        JsonData jsonData = WiredEffectPayloadGuard.fromJson(wiredData, JsonData.class);
+        if(jsonData != null) {
+            this.setDelay(WiredEffectPayloadGuard.delay(jsonData.delay));
+            this.itemId = this.normalizeHandItem(jsonData.item_id);
+            this.botName = WiredEffectPayloadGuard.text(jsonData.bot_name);
+            this.userSource = this.normalizeUserSource(jsonData.userSource);
+            this.botSource = ((jsonData.botSource == WiredSourceUtil.SOURCE_TRIGGER) && this.botName != null && !this.botName.isEmpty())
                     ? BOT_SOURCE_NAME
-                    : this.normalizeBotSource(data.botSource);
+                    : this.normalizeBotSource(jsonData.botSource);
         }
         else {
-            String[] data = wiredData.split(((char) 9) + "");
+            String[] data = wiredData != null ? wiredData.split(((char) 9) + "") : new String[0];
 
             if (data.length == 3) {
-                this.setDelay(Integer.parseInt(data[0]));
-                this.itemId = this.normalizeHandItem(Integer.parseInt(data[1]));
-                this.botName = data[2];
+                this.setDelay(WiredEffectPayloadGuard.parseDelay(data[0]));
+                this.itemId = this.normalizeHandItem(WiredEffectPayloadGuard.parseInt(data[1], 0));
+                this.botName = WiredEffectPayloadGuard.text(data[2]);
             }
 
             this.needsUpdate(true);

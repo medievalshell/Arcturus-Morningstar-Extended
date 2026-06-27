@@ -19,9 +19,7 @@ import com.eu.habbo.plugin.events.users.UserCreditsEvent;
 import com.eu.habbo.plugin.events.users.UserDisconnectEvent;
 import com.eu.habbo.plugin.events.users.UserGetIPAddressEvent;
 import com.eu.habbo.plugin.events.users.UserPointsEvent;
-import gnu.trove.TIntCollection;
-import gnu.trove.map.hash.THashMap;
-import gnu.trove.set.hash.THashSet;
+import it.unimi.dsi.fastutil.ints.IntCollection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -146,31 +144,23 @@ public class Habbo implements Runnable {
             this.habboInfo.setIpLogin(ip);
         }
 
-        if (this.client.getMachineId() == null || this.client.getMachineId().length() == 0) {
-            return false;
-        }
+        // The Nitro client sends the UniqueID (machine fingerprint) packet right
+        // AFTER the SSO ticket, so client.getMachineId() may still be null here.
+        // Do NOT reject the login for a missing machineId — MachineIDEvent sets it
+        // and enforces the MAC ban as soon as the UniqueID packet arrives. Only
+        // MAC-ban check here when the fingerprint is already available.
+        String machineId = this.client.getMachineId();
+        if (machineId != null && !machineId.isEmpty()) {
+            this.habboInfo.setMachineID(machineId);
 
-        this.habboInfo.setMachineID(this.client.getMachineId());
-
-        if (Emulator.getGameEnvironment().getModToolManager().hasMACBan(this.client)) {
-            return false;
-        }
-
-        if (Emulator.getGameEnvironment().getModToolManager().hasIPBan(this.habboInfo.getIpLogin())) {
-            return false;
-        }
-
-        this.habboInfo.setMachineID(this.client.getMachineId());
-
-        if (Emulator.getGameEnvironment().getModToolManager().hasMACBan(this.client)) {
-            return false;
+            if (Emulator.getGameEnvironment().getModToolManager().hasMACBan(this.client)) {
+                return false;
+            }
         }
 
         if (Emulator.getGameEnvironment().getModToolManager().hasIPBan(this.habboInfo.getIpLogin())) {
             return false;
         }
-
-        this.habboInfo.setMachineID(this.client.getMachineId());
         this.isOnline(true);
 
         this.messenger.connectionChanged(this, true, false);
@@ -363,7 +353,7 @@ public class Habbo implements Runnable {
     }
 
 
-    public void addFurniture(THashSet<HabboItem> items) {
+    public void addFurniture(Collection<HabboItem> items) {
         this.habboInventory.getItemsComponent().addItems(items);
         this.client.sendResponse(new AddHabboItemComposer(items));
         this.client.sendResponse(new InventoryRefreshComposer());
@@ -418,7 +408,7 @@ public class Habbo implements Runnable {
             this.client.sendResponse(new AddUserBadgeComposer(badge, senderName));
             this.client.sendResponse(new AddHabboItemComposer(badge.getId(), AddHabboItemComposer.AddHabboItemCategory.BADGE));
 
-            THashMap<String, String> keys = new THashMap<>();
+            Map<String, String> keys = new HashMap<>();
             keys.put("display", "BUBBLE");
             keys.put("image", "${image.library.url}album1584/" + badge.getCode() + ".gif");
             keys.put("message", Emulator.getTexts().getValue("commands.generic.cmd_badge.received"));
@@ -476,7 +466,7 @@ public class Habbo implements Runnable {
         int currentTimestamp = Emulator.getIntUnixTimestamp();
         int twentyFourHoursInSeconds = 24 * 60 * 60; // 24 hours in seconds
 
-        THashMap<Integer, List<Integer>> newLog = new THashMap<>();
+        Map<Integer, List<Integer>> newLog = new HashMap<>();
 
         for (Map.Entry<Integer, List<Integer>> ltdLog : this.habboStats.ltdPurchaseLog.entrySet()) {
             List<Integer> filteredTimestamps = new ArrayList<>();
@@ -513,7 +503,7 @@ public class Habbo implements Runnable {
     }
 
     public Set<Integer> getForbiddenClothing() {
-        TIntCollection clothingIDs = this.getInventory().getWardrobeComponent().getClothing();
+        IntCollection clothingIDs = this.getInventory().getWardrobeComponent().getClothing();
 
         return Emulator.getGameEnvironment().getCatalogManager().clothing.values().stream()
                 .filter(c -> !clothingIDs.contains(c.id))

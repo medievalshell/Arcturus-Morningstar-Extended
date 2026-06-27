@@ -5,21 +5,26 @@ import com.eu.habbo.habbohotel.messenger.Messenger;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.friends.RemoveFriendComposer;
-import gnu.trove.list.array.TIntArrayList;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 
 public class RemoveFriendEvent extends MessageHandler {
+    private static final int MAX_BATCH_SIZE = 100;
 
-    private final TIntArrayList removedFriends;
+    private final IntArrayList removedFriends;
 
     public RemoveFriendEvent() {
-        this.removedFriends = new TIntArrayList();
+        this.removedFriends = new IntArrayList();
     }
 
     @Override
     public void handle() throws Exception {
         int count = this.packet.readInt();
+        if (count <= 0 || count > MAX_BATCH_SIZE) return;
+
         for (int i = 0; i < count; i++) {
             int habboId = this.packet.readInt();
+            if (habboId <= 0) continue;
+
             this.removedFriends.add(habboId);
 
             Messenger.unfriend(this.client.getHabbo().getHabboInfo().getId(), habboId);

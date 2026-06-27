@@ -4,7 +4,7 @@ import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.housekeeping.HousekeepingActionResultComposer;
-import org.mindrot.jbcrypt.BCrypt;
+import com.eu.habbo.networking.gameserver.auth.PasswordHasher;
 
 import java.security.SecureRandom;
 import java.sql.Connection;
@@ -13,7 +13,7 @@ import java.sql.SQLException;
 
 /**
  * Reset a user's password to a fresh random 12-character alphanumeric
- * string. Persists a BCrypt `$2a$` hash of the new password into
+ * string. Persists a BCrypt hash of the new password into
  * `users.password` (matches what `AuthHttpUtil.checkPassword` /
  * `SessionEndpoints` / `AccountChangeEndpoints` already write and read),
  * clears `auth_ticket` so any active session can't be re-used to bypass
@@ -46,11 +46,16 @@ public class HousekeepingResetUserPasswordEvent extends MessageHandler {
             return;
         }
 
+        if (!HousekeepingTargetRankGuard.canTargetUser(this.client.getHabbo(), userId)) {
+            this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.rank_too_high"));
+            return;
+        }
+
         String plain = randomPassword();
         String hash;
 
         try {
-            hash = BCrypt.hashpw(plain, BCrypt.gensalt(BCRYPT_COST));
+            hash = PasswordHasher.hash(plain, BCRYPT_COST);
         } catch (IllegalArgumentException e) {
             this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, false, 0, "housekeeping.error.hash_failed"));
             return;
@@ -74,6 +79,11 @@ public class HousekeepingResetUserPasswordEvent extends MessageHandler {
         // Plaintext flows through `message` — the client surfaces it via the
         // status banner so the operator can read it once. SSL is on the
         // operator: the only secure transport for the WS is wss://.
+        com.eu.habbo.habbohotel.modtool.HousekeepingAuditLog.log(
+                this.client.getHabbo().getHabboInfo().getId(),
+                this.client.getHabbo().getHabboInfo().getUsername(),
+                ACTION_KEY, userId, "password_reset=1",
+                this.client.getHabbo().getHabboInfo().getIpLogin());
         this.client.sendResponse(new HousekeepingActionResultComposer(ACTION_KEY, true, userId, plain));
     }
 

@@ -32,7 +32,6 @@ import com.eu.habbo.plugin.events.emulator.EmulatorLoadedEvent;
 import com.eu.habbo.plugin.events.users.UserWiredRewardReceived;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import gnu.trove.set.hash.THashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,9 +40,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayDeque;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.Set;
 
 /**
@@ -937,7 +936,7 @@ public final class WiredManager {
             return null;
         }
 
-        THashSet<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(
+        Collection<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(
                 triggerItem.getX(),
                 triggerItem.getY());
 
@@ -984,14 +983,14 @@ public final class WiredManager {
      * @param callStackDepth current recursion depth for trigger stacks
      * @return true if any effects were executed
      */
-    public static boolean executeEffectsAtTiles(THashSet<RoomTile> tiles, final RoomUnit roomUnit, final Room room, final int callStackDepth) {
+    public static boolean executeEffectsAtTiles(Collection<RoomTile> tiles, final RoomUnit roomUnit, final Room room, final int callStackDepth) {
         if (tiles == null || tiles.isEmpty() || room == null || engine == null || stackIndex == null) {
             return false;
         }
 
         for (RoomTile tile : tiles) {
             if (room != null) {
-                THashSet<HabboItem> items = room.getItemsAt(tile);
+                Collection<HabboItem> items = room.getItemsAt(tile);
 
                 long millis = room.getCycleTimestamp();
                 for (final HabboItem item : items) {
@@ -1012,7 +1011,7 @@ public final class WiredManager {
         return true;
     }
 
-    public static boolean executeNegatedStacksAtTiles(THashSet<RoomTile> tiles, final RoomUnit roomUnit, final Room room, final int callStackDepth) {
+    public static boolean executeNegatedStacksAtTiles(Collection<RoomTile> tiles, final RoomUnit roomUnit, final Room room, final int callStackDepth) {
         if (tiles == null || tiles.isEmpty() || room == null || engine == null || stackIndex == null) {
             return false;
         }
@@ -1165,35 +1164,52 @@ public final class WiredManager {
             return false;
         }
 
-        if (rewardReceived.value.isEmpty()) {
+        String rewardType = rewardReceived.type == null ? "" : rewardReceived.type.trim();
+        String rewardValue = rewardReceived.value == null ? "" : rewardReceived.value.trim();
+
+        if (rewardValue.isEmpty()) {
             return false;
         }
 
-        if (rewardReceived.type.equalsIgnoreCase("credits")) {
-            habbo.giveCredits(Integer.parseInt(rewardReceived.value));
+        if (rewardType.equalsIgnoreCase("credits")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.giveCredits(amount);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
         }
 
-        if (rewardReceived.type.equalsIgnoreCase("diamonds") || rewardReceived.type.equalsIgnoreCase("diamond")) {
-            habbo.givePoints(5, Integer.parseInt(rewardReceived.value));
+        if (rewardType.equalsIgnoreCase("diamonds") || rewardType.equalsIgnoreCase("diamond")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.givePoints(5, amount);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
         }
 
-        if (rewardReceived.type.equalsIgnoreCase("pixels")) {
-            habbo.givePixels(Integer.parseInt(rewardReceived.value));
+        if (rewardType.equalsIgnoreCase("pixels")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.givePixels(amount);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
         }
 
-        if (rewardReceived.type.startsWith("points")) {
-            int points = Integer.parseInt(rewardReceived.value);
+        if (rewardType.startsWith("points")) {
+            Integer points = parsePositiveRewardInteger(rewardValue);
+            if (points == null) return false;
+
             int type = 5;
 
             try {
-                type = Integer.parseInt(rewardReceived.type.replace("points", ""));
-            } catch (Exception e) {
+                int parsedType = Integer.parseInt(rewardType.replace("points", "").trim());
+                if (parsedType > 0) {
+                    type = parsedType;
+                }
+            } catch (NumberFormatException ignored) {
             }
 
             habbo.givePoints(type, points);
@@ -1201,8 +1217,11 @@ public final class WiredManager {
             return true;
         }
 
-        if (rewardReceived.type.equalsIgnoreCase("furni")) {
-            Item baseItem = Emulator.getGameEnvironment().getItemManager().getItem(Integer.parseInt(rewardReceived.value));
+        if (rewardType.equalsIgnoreCase("furni")) {
+            Integer itemId = parsePositiveRewardInteger(rewardValue);
+            if (itemId == null) return false;
+
+            Item baseItem = Emulator.getGameEnvironment().getItemManager().getItem(itemId);
             if (baseItem == null) {
                 return false;
             }
@@ -1220,14 +1239,20 @@ public final class WiredManager {
             return true;
         }
 
-        if (rewardReceived.type.equalsIgnoreCase("respect")) {
-            habbo.getHabboStats().respectPointsReceived += Integer.parseInt(rewardReceived.value);
+        if (rewardType.equalsIgnoreCase("respect")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.getHabboStats().respectPointsReceived += amount;
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
         }
 
-        if (rewardReceived.type.equalsIgnoreCase("cata")) {
-            CatalogItem item = Emulator.getGameEnvironment().getCatalogManager().getCatalogItem(Integer.parseInt(rewardReceived.value));
+        if (rewardType.equalsIgnoreCase("cata")) {
+            Integer catalogItemId = parsePositiveRewardInteger(rewardValue);
+            if (catalogItemId == null) return false;
+
+            CatalogItem item = Emulator.getGameEnvironment().getCatalogManager().getCatalogItem(catalogItemId);
             if (item == null) {
                 return false;
             }
@@ -1238,6 +1263,15 @@ public final class WiredManager {
         }
 
         return false;
+    }
+
+    private static Integer parsePositiveRewardInteger(String value) {
+        try {
+            int parsed = Integer.parseInt(value == null ? "" : value.trim());
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     public static boolean getReward(Habbo habbo, WiredEffectGiveReward wiredBox) {

@@ -7,7 +7,6 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomCategory;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.navigator.NewNavigatorSearchResultsComposer;
-import gnu.trove.map.hash.THashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,12 +14,20 @@ import java.util.*;
 
 public class RequestNewNavigatorRoomsEvent extends MessageHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(RequestNewNavigatorRoomsEvent.class);
+    private static final int MAX_VIEW_LENGTH = 32;
+    private static final int MAX_QUERY_LENGTH = 64;
+
+    @Override
+    public int getRatelimit() {
+        return 200;
+    }
 
     @Override
     public void handle() throws Exception {
         String view = this.packet.readString();
         String query = this.packet.readString();
-
+        if (view.length() > MAX_VIEW_LENGTH) return;
+        if (query.length() > MAX_QUERY_LENGTH) query = query.substring(0, MAX_QUERY_LENGTH);
         if (view.equals("query")) view = "hotel_view";
         if (view.equals("groups")) view = "hotel_view";
 
@@ -43,7 +50,7 @@ public class RequestNewNavigatorRoomsEvent extends MessageHandler {
         NavigatorFilterField field = Emulator.getGameEnvironment().getNavigatorManager().filterSettings.get(filterField);
         if (filter != null) {
             if (query.contains(":")) {
-                String[] parts = query.split(":");
+                String[] parts = query.split(":", 2);
 
                 if (parts.length > 1) {
                     filterField = parts[0];
@@ -53,6 +60,7 @@ public class RequestNewNavigatorRoomsEvent extends MessageHandler {
                     if (!Emulator.getGameEnvironment().getNavigatorManager().filterSettings.containsKey(filterField)) {
                         filterField = "anything";
                     }
+                    part = "";
                 }
             }
 
@@ -95,33 +103,24 @@ public class RequestNewNavigatorRoomsEvent extends MessageHandler {
                 rooms.addAll(searchResultList.rooms);
                 resultLists.add(new SearchResultList(searchResultList.order, searchResultList.code, searchResultList.query, searchResultList.action, searchResultList.mode, searchResultList.hidden, rooms, searchResultList.filter, searchResultList.showInvisible, searchResultList.displayOrder, searchResultList.categoryOrder));
             }
+            if ("group".equals(filterField)) {
+                final String needle = part.toLowerCase();
+                for (SearchResultList list : resultLists) {
+                    list.rooms.removeIf(room -> !room.belongsToGuild()
+                            || (!needle.isEmpty() && !room.getGuildName().toLowerCase().contains(needle)));
+                }
+            }
             filter.filter(field.field, part, resultLists);
             resultLists = toQueryResults(resultLists);
             this.client.sendResponse(new NewNavigatorSearchResultsComposer(view, query, resultLists));
         } catch (Exception e) {
             LOGGER.error("Caught exception", e);
         }
-
-        /*
-        try
-        {
-
-            List<SearchResultList> resultLists = new ArrayList<>(filter.getResult(this.client.getHabbo(), field, part, category != null ? category.getId() : -1));
-            filter.filter(field.field, part, resultLists);
-
-            Collections.sort(resultLists);
-            this.client.sendResponse(new NewNavigatorSearchResultsComposer(view, query, resultLists));
-        }
-        catch (Exception e)
-        {
-            LOGGER.error("Caught exception", e);
-        }
-        */
     }
 
     private ArrayList<SearchResultList> toQueryResults(List<SearchResultList> resultLists) {
         ArrayList<SearchResultList> nList = new ArrayList<>();
-        THashMap<Integer, Room> searchRooms = new THashMap<>();
+        Map<Integer, Room> searchRooms = new HashMap<>();
 
         for (SearchResultList li : resultLists) {
             for (Room room : li.rooms) {

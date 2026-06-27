@@ -13,8 +13,8 @@ import com.eu.habbo.messages.outgoing.inventory.AddHabboItemComposer;
 import com.eu.habbo.messages.outgoing.inventory.InventoryRefreshComposer;
 import com.eu.habbo.messages.outgoing.inventory.RemoveHabboItemComposer;
 import com.eu.habbo.threading.runnables.QueryDeleteHabboItems;
-import gnu.trove.map.hash.TIntObjectHashMap;
 
+import java.util.HashMap;
 import java.util.Map;
 
 public class CraftingCraftItemEvent extends MessageHandler {
@@ -31,12 +31,14 @@ public class CraftingCraftItemEvent extends MessageHandler {
                 return;
             }
 
-            TIntObjectHashMap<HabboItem> toRemove = new TIntObjectHashMap<>();
+            Map<Integer, HabboItem> toRemove = new HashMap<>();
             for (Map.Entry<Item, Integer> set : recipe.getIngredients().entrySet()) {
                 for (int i = 0; i < set.getValue(); i++) {
                     HabboItem habboItem = this.client.getHabbo().getInventory().getItemsComponent().getAndRemoveHabboItem(set.getKey());
 
                     if (habboItem == null) {
+                        // Not enough ingredients — give back whatever we already pulled.
+                        this.restoreItems(toRemove);
                         return;
                     }
 
@@ -60,18 +62,31 @@ public class CraftingCraftItemEvent extends MessageHandler {
                 this.client.getHabbo().getInventory().getItemsComponent().addItem(rewardItem);
                 this.client.sendResponse(new AddHabboItemComposer(rewardItem));
                 AchievementManager.progressAchievement(this.client.getHabbo(), Emulator.getGameEnvironment().getAchievementManager().getAchievement("Atcg"));
-                toRemove.forEachValue(object -> {
+                toRemove.values().forEach(object -> {
                     CraftingCraftItemEvent.this.client.sendResponse(new RemoveHabboItemComposer(object.getGiftAdjustedId()));
-                    return true;
                 });
                 this.client.sendResponse(new InventoryRefreshComposer());
 
-                Emulator.getThreading().run(new QueryDeleteHabboItems(toRemove));
+                Emulator.getThreading().run(new QueryDeleteHabboItems(toRemove.values()));
                 return;
             }
 
+            // Reward creation failed after we already pulled the ingredients —
+            // restore them so the craft isn't a silent item sink.
+            this.restoreItems(toRemove);
         }
 
         this.client.sendResponse(new CraftingResultComposer(null));
+    }
+
+    private void restoreItems(Map<Integer, HabboItem> items) {
+        if (items.isEmpty()) {
+            return;
+        }
+        items.values().forEach(item -> {
+            this.client.getHabbo().getInventory().getItemsComponent().addItem(item);
+            this.client.sendResponse(new AddHabboItemComposer(item));
+        });
+        this.client.sendResponse(new InventoryRefreshComposer());
     }
 }

@@ -5,7 +5,6 @@ import com.google.gson.JsonObject;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
-import org.mindrot.jbcrypt.BCrypt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,7 +68,7 @@ final class SessionEndpoints {
                         com.eu.habbo.habbohotel.users.Habbo habbo =
                                 Emulator.getGameServer().getGameClientManager().getHabbo(userId);
                         if (habbo != null && habbo.getClient() != null) {
-                            Emulator.getGameServer().getGameClientManager().disposeClient(habbo.getClient());
+                            Emulator.getGameServer().getGameClientManager().forceDisposeClient(habbo.getClient());
                         }
                     }
                 }
@@ -348,7 +347,7 @@ final class SessionEndpoints {
                 }
             }
 
-            String hashed = BCrypt.hashpw(password, BCrypt.gensalt(12));
+            String hashed = PasswordHasher.hash(password, 12);
             String defaultLook = Emulator.getConfig().getValue("register.default.look",
                     "hr-100-7.hd-180-1.ch-210-66.lg-270-82.sh-290-80");
             String defaultMotto = Emulator.getConfig().getValue("register.default.motto", "I love Habbo!");

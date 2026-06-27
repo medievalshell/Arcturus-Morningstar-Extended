@@ -23,7 +23,7 @@ public class TextsManager {
 
             LOGGER.info("Texts Manager -> Loaded! ({} MS)", System.currentTimeMillis() - millis);
         } catch (Exception e) {
-            e.printStackTrace();
+            LOGGER.error("Caught exception", e);
         }
     }
 
@@ -49,6 +49,10 @@ public class TextsManager {
         if (!this.texts.containsKey(key)) {
             LOGGER.error("Text key not found: {}", key);
         }
+        return this.texts.getProperty(key, defaultValue);
+    }
+
+    public String getValueQuietly(String key, String defaultValue) {
         return this.texts.getProperty(key, defaultValue);
     }
 

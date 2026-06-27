@@ -3,11 +3,11 @@ package com.eu.habbo.habbohotel.items.interactions.wired.triggers;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
+import com.eu.habbo.habbohotel.items.interactions.wired.WiredTimerInputGuard;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.wired.WiredTriggerType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.procedure.TObjectProcedure;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -72,15 +72,11 @@ public class WiredTriggerRepeaterShort extends WiredTriggerRepeater {
 
         if (!this.isTriggeredByRoomUnit()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getEffects(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredEffect>() {
-                @Override
-                public boolean execute(InteractionWiredEffect object) {
-                    if (object.requiresTriggeringUser()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredEffect effect : room.getRoomSpecialTypes().getEffects(this.getX(), this.getY())) {
+                if (effect.requiresTriggeringUser()) {
+                    invalidTriggers.add(effect.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -94,8 +90,7 @@ public class WiredTriggerRepeaterShort extends WiredTriggerRepeater {
     public boolean saveData(WiredSettings settings) {
         if (settings.getIntParams().length < 1) return false;
 
-        int newRepeatTime = settings.getIntParams()[0] * STEP_MS;
-        this.repeatTime = clampRepeatTime(newRepeatTime);
+        this.repeatTime = WiredTimerInputGuard.fromClientUnits(settings.getIntParams()[0], STEP_MS, MIN_DELAY, MAX_DELAY);
 
         return true;
     }

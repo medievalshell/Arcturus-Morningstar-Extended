@@ -3,31 +3,35 @@ package com.eu.habbo.habbohotel.permissions;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.plugin.HabboPlugin;
-import gnu.trove.map.hash.THashMap;
-import gnu.trove.map.hash.TIntIntHashMap;
-import gnu.trove.map.hash.TIntObjectHashMap;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class PermissionsManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(PermissionsManager.class);
 
-    private final TIntObjectHashMap<Rank> ranks;
-    private final TIntIntHashMap enables;
-    private final THashMap<String, List<Rank>> badges;
+    private final Int2ObjectMap<Rank> ranks;
+    private final Int2IntMap enables;
+    private final Map<String, List<Rank>> badges;
     private volatile boolean normalizedSchemaEnabled;
 
     public PermissionsManager() {
         long millis = System.currentTimeMillis();
-        this.ranks = new TIntObjectHashMap<>();
-        this.enables = new TIntIntHashMap();
-        this.badges = new THashMap<String, List<Rank>>();
+        this.ranks = new Int2ObjectOpenHashMap<>();
+        this.enables = new Int2IntOpenHashMap();
+        this.badges = new HashMap<>();
 
         this.reload();
 
@@ -65,35 +69,45 @@ public class PermissionsManager {
     }
 
     private void loadPermissionsLegacy(Connection connection) throws SQLException {
+        Set<Integer> loadedRankIds = new HashSet<>();
+
         try (Statement statement = connection.createStatement(); ResultSet set = statement.executeQuery("SELECT * FROM permissions ORDER BY id ASC")) {
             while (set.next()) {
+                int rankId = set.getInt("id");
+                loadedRankIds.add(rankId);
+
                 Rank rank = null;
-                if (!this.ranks.containsKey(set.getInt("id"))) {
+                if (!this.ranks.containsKey(rankId)) {
                     rank = new Rank(set);
-                    this.ranks.put(set.getInt("id"), rank);
+                    this.ranks.put(rankId, rank);
                 } else {
-                    rank = this.ranks.get(set.getInt("id"));
+                    rank = this.ranks.get(rankId);
                     rank.load(set);
                 }
 
                 this.addBadgeMapping(rank);
             }
         }
+
+        this.pruneMissingRanks(loadedRankIds);
     }
 
     private boolean loadPermissionsNormalized(Connection connection) throws SQLException {
         boolean hasRanks = false;
         List<Rank> loadedRanks = new ArrayList<>();
+        Set<Integer> loadedRankIds = new HashSet<>();
 
         try (Statement statement = connection.createStatement(); ResultSet set = statement.executeQuery("SELECT * FROM permission_ranks ORDER BY id ASC")) {
             while (set.next()) {
                 hasRanks = true;
+                int rankId = set.getInt("id");
+                loadedRankIds.add(rankId);
 
-                Rank rank = this.ranks.get(set.getInt("id"));
+                Rank rank = this.ranks.get(rankId);
 
                 if (rank == null) {
-                    rank = new Rank(set.getInt("id"));
-                    this.ranks.put(set.getInt("id"), rank);
+                    rank = new Rank(rankId);
+                    this.ranks.put(rankId, rank);
                 }
 
                 rank.loadNormalizedMetadata(set);
@@ -141,7 +155,16 @@ public class PermissionsManager {
             }
         }
 
+        this.pruneMissingRanks(loadedRankIds);
         return hasDefinitions;
+    }
+
+    private void pruneMissingRanks(Set<Integer> loadedRankIds) {
+        for (int rankId : this.ranks.keySet().toIntArray()) {
+            if (!loadedRankIds.contains(rankId)) {
+                this.ranks.remove(rankId);
+            }
+        }
     }
 
     private void ensureNormalizedRankColumns(Connection connection, List<Rank> loadedRanks) throws SQLException {
@@ -193,6 +216,10 @@ public class PermissionsManager {
     }
 
     private boolean tableHasRows(Connection connection, String tableName) throws SQLException {
+        if (!tableName.matches("^[A-Za-z_][A-Za-z0-9_]*$")) {
+            throw new SQLException("Refusing to query unsafe table name: " + tableName);
+        }
+
         try (Statement statement = connection.createStatement(); ResultSet set = statement.executeQuery("SELECT COUNT(*) FROM " + tableName)) {
             return set.next() && set.getInt(1) > 0;
         }
@@ -234,7 +261,7 @@ public class PermissionsManager {
 
 
     public Rank getRankByName(String rankName) {
-        for (Rank rank : this.ranks.valueCollection()) {
+        for (Rank rank : this.ranks.values()) {
             if (rank.getName().equalsIgnoreCase(rankName))
                 return rank;
         }
@@ -244,7 +271,7 @@ public class PermissionsManager {
 
 
     public boolean isEffectBlocked(int effectId, int rank) {
-        return this.enables.contains(effectId) && this.enables.get(effectId) > rank;
+        return this.enables.containsKey(effectId) && this.enables.get(effectId) > rank;
     }
 
 
@@ -254,6 +281,10 @@ public class PermissionsManager {
 
 
     public boolean hasPermission(Habbo habbo, String permission, boolean withRoomRights) {
+        if (habbo == null || habbo.getHabboInfo() == null || permission == null || permission.isBlank()) {
+            return false;
+        }
+
         if (!this.hasPermission(habbo.getHabboInfo().getRank(), permission, withRoomRights)) {
             for (HabboPlugin plugin : Emulator.getPluginManager().getPlugins()) {
                 if (plugin.hasPermission(habbo, permission)) {
@@ -269,19 +300,20 @@ public class PermissionsManager {
 
 
     public boolean hasPermission(Rank rank, String permission, boolean withRoomRights) {
-        return rank.hasPermission(permission, withRoomRights);
+        return rank != null && permission != null && !permission.isBlank() && rank.hasPermission(permission, withRoomRights);
     }
 
     public Set<String> getStaffBadges() {
-        return this.badges.keySet();
+        return Collections.unmodifiableSet(new HashSet<>(this.badges.keySet()));
     }
 
     public List<Rank> getRanksByBadgeCode(String code) {
-        return this.badges.get(code);
+        List<Rank> ranks = this.badges.get(code);
+        return ranks == null ? Collections.emptyList() : Collections.unmodifiableList(new ArrayList<>(ranks));
     }
 
     public List<Rank> getAllRanks() {
-        return new ArrayList<>(this.ranks.valueCollection());
+        return new ArrayList<>(this.ranks.values());
     }
 
     public boolean isNormalizedSchemaEnabled() {

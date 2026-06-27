@@ -9,12 +9,9 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.outgoing.guilds.GuildJoinErrorComposer;
 import com.eu.habbo.messages.outgoing.guilds.forums.GuildForumDataComposer;
-import gnu.trove.TCollections;
-import gnu.trove.iterator.TIntObjectIterator;
-import gnu.trove.map.TIntObjectMap;
-import gnu.trove.map.hash.THashMap;
-import gnu.trove.map.hash.TIntObjectHashMap;
-import gnu.trove.set.hash.THashSet;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,16 +23,16 @@ public class GuildManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GuildManager.class);
 
-    private final THashMap<GuildPartType, THashMap<Integer, GuildPart>> guildParts;
+    private final Map<GuildPartType, Map<Integer, GuildPart>> guildParts;
 
-    private final TIntObjectMap<Guild> guilds;
+    private final Int2ObjectMap<Guild> guilds;
 
-    private final THashSet<ForumView> views = new THashSet<>();
+    private final Set<ForumView> views = new HashSet<>();
 
     public GuildManager() {
         long millis = System.currentTimeMillis();
-        this.guildParts = new THashMap<GuildPartType, THashMap<Integer, GuildPart>>();
-        this.guilds = TCollections.synchronizedMap(new TIntObjectHashMap<Guild>());
+        this.guildParts = new HashMap<>();
+        this.guilds = Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
 
         this.loadGuildParts();
         this.loadGuildViews();
@@ -48,7 +45,7 @@ public class GuildManager {
         this.guildParts.clear();
 
         for (GuildPartType t : GuildPartType.values()) {
-            this.guildParts.put(t, new THashMap<>());
+            this.guildParts.put(t, new HashMap<>());
         }
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
@@ -123,7 +120,7 @@ public class GuildManager {
 
 
     public void deleteGuild(Guild guild) {
-        THashSet<GuildMember> members = this.getGuildMembers(guild);
+        Set<GuildMember> members = this.getGuildMembers(guild);
 
         for (GuildMember member : members) {
             Habbo habbo = Emulator.getGameEnvironment().getHabboManager().getHabbo(member.getUserId());
@@ -196,16 +193,11 @@ public class GuildManager {
 
     public void clearInactiveGuilds() {
         List<Integer> toRemove = new ArrayList<Integer>();
-        TIntObjectIterator<Guild> guilds = this.guilds.iterator();
-        for (int i = this.guilds.size(); i-- > 0; ) {
-            try {
-                guilds.advance();
-            } catch (NoSuchElementException e) {
-                break;
-            }
-
-            if (guilds.value().lastRequested < Emulator.getIntUnixTimestamp() - 300) {
-                toRemove.add(guilds.value().getId());
+        synchronized (this.guilds) {
+            for (Guild guild : this.guilds.values()) {
+                if (guild.lastRequested < Emulator.getIntUnixTimestamp() - 300) {
+                    toRemove.add(guild.getId());
+                }
             }
         }
 
@@ -291,11 +283,12 @@ public class GuildManager {
                         }
                     }
                 } else if (!error) {
-                    try (PreparedStatement statement = connection.prepareStatement("UPDATE guilds_members SET level_id = ?, member_since = ? WHERE user_id = ? AND guild_id = ?")) {
+                    try (PreparedStatement statement = connection.prepareStatement("UPDATE guilds_members SET level_id = ?, member_since = ? WHERE user_id = ? AND guild_id = ? AND level_id = ?")) {
                         statement.setInt(1, GuildRank.MEMBER.type);
                         statement.setInt(2, Emulator.getIntUnixTimestamp());
                         statement.setInt(3, userId);
                         statement.setInt(4, guild.getId());
+                        statement.setInt(5, GuildRank.REQUESTED.type);
                         statement.execute();
                     }
                 }
@@ -393,13 +386,13 @@ public class GuildManager {
     }
 
 
-    public THashSet<GuildMember> getGuildMembers(int guildId) {
+    public Set<GuildMember> getGuildMembers(int guildId) {
         return this.getGuildMembers(this.getGuild(guildId));
     }
 
 
-    THashSet<GuildMember> getGuildMembers(Guild guild) {
-        THashSet<GuildMember> guildMembers = new THashSet<GuildMember>();
+    Set<GuildMember> getGuildMembers(Guild guild) {
+        Set<GuildMember> guildMembers = new HashSet<>();
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("SELECT users.username, users.look, guilds_members.* FROM guilds_members INNER JOIN users ON guilds_members.user_id = users.id WHERE guilds_members.guild_id = ?")) {
             statement.setInt(1, guild.getId());
@@ -421,9 +414,9 @@ public class GuildManager {
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("SELECT users.username, users.look, guilds_members.* FROM guilds_members INNER JOIN users ON guilds_members.user_id = users.id WHERE guilds_members.guild_id = ?  " + (rankQuery(levelId)) + " AND users.username LIKE ? ORDER BY level_id, member_since ASC LIMIT ?, ?")) {
             statement.setInt(1, guild.getId());
-            statement.setString(2, "%" + query + "%");
+            statement.setString(2, "%" + com.eu.habbo.util.SqlLikeEscaper.escape(query) + "%");
             statement.setInt(3, page * 14);
-            statement.setInt(4, (page * 14) + 14);
+            statement.setInt(4, 14);
 
             try (ResultSet set = statement.executeQuery()) {
                 while (set.next()) {
@@ -440,7 +433,7 @@ public class GuildManager {
     public int getGuildMembersCount(Guild guild, int page, int levelId, String query) {
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("SELECT COUNT(*) FROM guilds_members INNER JOIN users ON guilds_members.user_id = users.id WHERE guilds_members.guild_id = ?  " + (rankQuery(levelId)) + " AND users.username LIKE ? ORDER BY level_id, member_since ASC")) {
             statement.setInt(1, guild.getId());
-            statement.setString(2, "%" + query + "%");
+            statement.setString(2, "%" + com.eu.habbo.util.SqlLikeEscaper.escape(query) + "%");
 
             try (ResultSet set = statement.executeQuery()) {
                 while (set.next()) {
@@ -455,8 +448,8 @@ public class GuildManager {
     }
 
 
-    public THashMap<Integer, GuildMember> getOnlyAdmins(Guild guild) {
-        THashMap<Integer, GuildMember> guildAdmins = new THashMap<Integer, GuildMember>();
+    public Map<Integer, GuildMember> getOnlyAdmins(Guild guild) {
+        Map<Integer, GuildMember> guildAdmins = new HashMap<>();
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("SELECT users.username, users.look, guilds_members.* FROM guilds_members INNER JOIN users ON guilds_members.user_id = users.id WHERE guilds_members.guild_id = ?  " + (rankQuery(1)))) {
             statement.setInt(1, guild.getId());
@@ -590,7 +583,7 @@ public class GuildManager {
         return false;
     }
 
-    public THashMap<GuildPartType, THashMap<Integer, GuildPart>> getGuildParts() {
+    public Map<GuildPartType, Map<Integer, GuildPart>> getGuildParts() {
         return this.guildParts;
     }
 
@@ -652,14 +645,16 @@ public class GuildManager {
 
 
     public void dispose() {
-        TIntObjectIterator<Guild> guildIterator = this.guilds.iterator();
+        synchronized (this.guilds) {
+            Iterator<Guild> guildIterator = this.guilds.values().iterator();
+            while (guildIterator.hasNext()) {
+                Guild guild = guildIterator.next();
+                if (guild.needsUpdate) {
+                    guild.run();
+                }
 
-        for (int i = this.guilds.size(); i-- > 0; ) {
-            guildIterator.advance();
-            if (guildIterator.value().needsUpdate)
-                guildIterator.value().run();
-
-            guildIterator.remove();
+                guildIterator.remove();
+            }
         }
         LOGGER.info("Guild Manager -> Disposed!");
     }

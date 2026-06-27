@@ -3,12 +3,13 @@ package com.eu.habbo.habbohotel.rooms;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.rooms.pathfinding.Pathfinder;
 import com.eu.habbo.habbohotel.rooms.pathfinding.impl.PathfinderImpl;
-import gnu.trove.set.hash.THashSet;
 import java.awt.Rectangle;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -130,13 +131,16 @@ public class RoomLayout {
     this.roomTiles = new RoomTile[this.mapSizeX][this.mapSizeY];
 
     for (short y = 0; y < this.mapSizeY; y++) {
-      if (modelTemp[y].isEmpty() || modelTemp[y].equalsIgnoreCase("\r")) {
-        continue;
-      }
+      // A row shorter/longer than the model width (or empty) cannot be parsed
+      // per-square. Previously such tiles were left null while tileExists()
+      // still reported them present, causing NPEs in the coordinate accessors.
+      // Fill them with INVALID tiles so every in-bounds coordinate is non-null.
+      boolean validRow = !modelTemp[y].isEmpty() && modelTemp[y].length() == this.mapSizeX;
 
       for (short x = 0; x < this.mapSizeX; x++) {
-        if (modelTemp[y].length() != this.mapSizeX) {
-          break;
+        if (!validRow) {
+          this.roomTiles[x][y] = new RoomTile(x, y, (short) 0, RoomTileState.INVALID, true);
+          continue;
         }
 
         String square = modelTemp[y].substring(x, x + 1).trim().toLowerCase();
@@ -159,7 +163,9 @@ public class RoomLayout {
       }
     }
 
-    this.doorTile = this.roomTiles[this.doorX][this.doorY];
+    this.doorTile = (this.doorX >= 0 && this.doorX < this.mapSizeX && this.doorY >= 0 && this.doorY < this.mapSizeY)
+        ? this.roomTiles[this.doorX][this.doorY]
+        : null;
 
     if (this.doorTile != null) {
       this.doorTile.setAllowStack(false);
@@ -451,8 +457,8 @@ public class RoomLayout {
     return true;
   }
 
-  public THashSet<RoomTile> getTilesAt(RoomTile tile, int width, int length, int rotation) {
-    THashSet<RoomTile> pointList = new THashSet<>(width * length, 0.1f);
+  public Set<RoomTile> getTilesAt(RoomTile tile, int width, int length, int rotation) {
+    Set<RoomTile> pointList = new HashSet<>(width * length);
 
     if (tile != null) {
       if (rotation == 0 || rotation == 4) {

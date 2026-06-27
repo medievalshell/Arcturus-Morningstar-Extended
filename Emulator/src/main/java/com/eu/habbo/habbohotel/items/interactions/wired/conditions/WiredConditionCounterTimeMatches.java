@@ -13,11 +13,13 @@ import com.eu.habbo.habbohotel.wired.core.WiredContext;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredSourceUtil;
 import com.eu.habbo.messages.ServerMessage;
-import gnu.trove.set.hash.THashSet;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class WiredConditionCounterTimeMatches extends InteractionWiredCondition {
@@ -31,7 +33,7 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
 
     public static final WiredConditionType type = WiredConditionType.COUNTER_TIME_MATCHES;
 
-    private final THashSet<HabboItem> items;
+    private final Set<HabboItem> items;
     private int comparison = COMPARISON_EQUAL;
     private int minutes = 0;
     private int halfSecondSteps = 0;
@@ -40,12 +42,12 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
 
     public WiredConditionCounterTimeMatches(ResultSet set, Item baseItem) throws SQLException {
         super(set, baseItem);
-        this.items = new THashSet<>();
+        this.items = new LinkedHashSet<>();
     }
 
     public WiredConditionCounterTimeMatches(int id, int userId, Item item, String extradata, int limitedStack, int limitedSells) {
         super(id, userId, item, extradata, limitedStack, limitedSells);
-        this.items = new THashSet<>();
+        this.items = new LinkedHashSet<>();
     }
 
     @Override
@@ -111,19 +113,21 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
 
     @Override
     public void loadWiredData(ResultSet set, Room room) throws SQLException {
-        this.items.clear();
-        this.comparison = COMPARISON_EQUAL;
-        this.minutes = 0;
-        this.halfSecondSteps = 0;
-        this.furniSource = WiredSourceUtil.SOURCE_TRIGGER;
-        this.quantifier = QUANTIFIER_ALL;
+        this.resetSettings();
 
         String wiredData = set.getString("wired_data");
         if (wiredData == null || wiredData.isEmpty() || !wiredData.startsWith("{")) {
             return;
         }
 
-        JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+        JsonData data;
+        try {
+            data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
+        } catch (RuntimeException exception) {
+            this.resetSettings();
+            return;
+        }
+
         if (data == null) {
             return;
         }
@@ -131,7 +135,7 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
         this.comparison = this.normalizeComparison(data.comparison);
         this.minutes = this.normalizeMinutes(data.minutes);
         this.halfSecondSteps = this.normalizeHalfSecondSteps(data.halfSecondSteps);
-        this.furniSource = data.furniSource;
+        this.furniSource = this.normalizeFurniSource(data.furniSource);
         this.quantifier = this.normalizeQuantifier(data.quantifier);
 
         if (data.itemIds == null) {
@@ -139,6 +143,10 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
         }
 
         for (Integer id : data.itemIds) {
+            if (id == null) {
+                continue;
+            }
+
             HabboItem item = room.getHabboItem(id);
             if (item instanceof InteractionGameUpCounter) {
                 this.items.add(item);
@@ -195,7 +203,7 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
         this.comparison = (params.length > 0) ? this.normalizeComparison(params[0]) : COMPARISON_EQUAL;
         this.minutes = (params.length > 1) ? this.normalizeMinutes(params[1]) : 0;
         this.halfSecondSteps = (params.length > 2) ? this.normalizeHalfSecondSteps(params[2]) : 0;
-        this.furniSource = (params.length > 3) ? params[3] : WiredSourceUtil.SOURCE_TRIGGER;
+        this.furniSource = (params.length > 3) ? this.normalizeFurniSource(params[3]) : WiredSourceUtil.SOURCE_TRIGGER;
         this.quantifier = (params.length > 4) ? this.normalizeQuantifier(params[4]) : QUANTIFIER_ALL;
 
         this.items.clear();
@@ -224,8 +232,17 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
         return true;
     }
 
+    private void resetSettings() {
+        this.items.clear();
+        this.comparison = COMPARISON_EQUAL;
+        this.minutes = 0;
+        this.halfSecondSteps = 0;
+        this.furniSource = WiredSourceUtil.SOURCE_TRIGGER;
+        this.quantifier = QUANTIFIER_ALL;
+    }
+
     private void refresh(Room room) {
-        THashSet<HabboItem> remove = new THashSet<>();
+        Set<HabboItem> remove = new HashSet<>();
 
         for (HabboItem item : this.items) {
             HabboItem roomItem = room.getHabboItem(item.getId());
@@ -256,7 +273,7 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
         }
     }
 
-    private int normalizeComparison(int value) {
+    int normalizeComparison(int value) {
         if (value < COMPARISON_LESS || value > COMPARISON_GREATER) {
             return COMPARISON_EQUAL;
         }
@@ -264,16 +281,28 @@ public class WiredConditionCounterTimeMatches extends InteractionWiredCondition 
         return value;
     }
 
-    private int normalizeMinutes(int value) {
+    int normalizeMinutes(int value) {
         return Math.max(0, Math.min(MAX_MINUTES, value));
     }
 
-    private int normalizeHalfSecondSteps(int value) {
+    int normalizeHalfSecondSteps(int value) {
         return Math.max(0, Math.min(MAX_HALF_SECOND_STEPS, value));
     }
 
-    private int normalizeQuantifier(int value) {
+    int normalizeQuantifier(int value) {
         return (value == QUANTIFIER_ANY) ? QUANTIFIER_ANY : QUANTIFIER_ALL;
+    }
+
+    int normalizeFurniSource(int value) {
+        switch (value) {
+            case WiredSourceUtil.SOURCE_SELECTED:
+            case WiredSourceUtil.SOURCE_SELECTOR:
+            case WiredSourceUtil.SOURCE_SIGNAL:
+            case WiredSourceUtil.SOURCE_TRIGGER:
+                return value;
+            default:
+                return WiredSourceUtil.SOURCE_TRIGGER;
+        }
     }
 
     static class JsonData {

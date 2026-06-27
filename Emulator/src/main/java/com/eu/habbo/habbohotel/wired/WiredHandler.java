@@ -33,7 +33,6 @@ import com.eu.habbo.plugin.events.furniture.wired.WiredStackTriggeredEvent;
 import com.eu.habbo.plugin.events.users.UserWiredRewardReceived;
 import com.eu.habbo.habbohotel.wired.core.WiredExecutionOrderUtil;
 import com.google.gson.GsonBuilder;
-import gnu.trove.set.hash.THashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,11 +41,14 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 public class WiredHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(WiredHandler.class);
@@ -82,7 +84,7 @@ public class WiredHandler {
         if (room.getRoomSpecialTypes() == null)
             return false;
 
-        THashSet<InteractionWiredTrigger> triggers = room.getRoomSpecialTypes().getTriggers(triggerType);
+        Collection<InteractionWiredTrigger> triggers = room.getRoomSpecialTypes().getTriggers(triggerType);
 
         if (triggers == null || triggers.isEmpty())
             return false;
@@ -130,7 +132,7 @@ public class WiredHandler {
         if (room.getRoomSpecialTypes() == null)
             return false;
 
-        THashSet<InteractionWiredTrigger> triggers = room.getRoomSpecialTypes().getTriggers(WiredTriggerType.CUSTOM);
+        Collection<InteractionWiredTrigger> triggers = room.getRoomSpecialTypes().getTriggers(WiredTriggerType.CUSTOM);
 
         if (triggers == null || triggers.isEmpty())
             return false;
@@ -178,10 +180,19 @@ public class WiredHandler {
     private static boolean handle(InteractionWiredTrigger trigger, final RoomUnit roomUnit, final Room room, final Object[] stuff, final LegacyExecutionPlan executionPlan) {
         long millis = System.currentTimeMillis();
         int roomUnitId = roomUnit != null ? roomUnit.getId() : -1;
+
+        // Only one thread may process a given trigger box at a time, so the
+        // cooldown check (below) and setCooldown (further down) act as one
+        // atomic claim — preventing a concurrent packet/cycle double-fire.
+        if (!trigger.tryBeginProcessing()) {
+            return false;
+        }
+
+        try {
         if (Emulator.isReady && ((Emulator.getConfig().getBoolean("wired.custom.enabled", false) && (trigger.canExecute(millis) || roomUnitId > -1) && trigger.userCanExecute(roomUnitId, millis)) || (!Emulator.getConfig().getBoolean("wired.custom.enabled", false) && trigger.canExecute(millis))) && trigger.execute(roomUnit, room, stuff)) {
-            THashSet<InteractionWiredCondition> conditions = room.getRoomSpecialTypes().getConditions(trigger.getX(), trigger.getY());
-            THashSet<InteractionWiredEffect> effects = room.getRoomSpecialTypes().getEffects(trigger.getX(), trigger.getY());
-            THashSet<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(trigger.getX(), trigger.getY());
+            Collection<InteractionWiredCondition> conditions = room.getRoomSpecialTypes().getConditions(trigger.getX(), trigger.getY());
+            Collection<InteractionWiredEffect> effects = room.getRoomSpecialTypes().getEffects(trigger.getX(), trigger.getY());
+            Collection<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(trigger.getX(), trigger.getY());
             WiredExtraExecutionLimit executionLimitExtra = null;
             WiredExtraRandom randomExtra = null;
 
@@ -230,7 +241,10 @@ public class WiredHandler {
                 return false;
             }
 
-            if (Emulator.getPluginManager().fireEvent(new WiredStackTriggeredEvent(room, roomUnit, trigger, effects, conditions)).isCancelled())
+            Set<InteractionWiredEffect> legacyEffects = new HashSet<>(effects);
+            Set<InteractionWiredCondition> legacyConditions = new HashSet<>(conditions);
+
+            if (Emulator.getPluginManager().fireEvent(new WiredStackTriggeredEvent(room, roomUnit, trigger, legacyEffects, legacyConditions)).isCancelled())
                 return false;
 
             trigger.activateBox(room, roomUnit, millis);
@@ -268,13 +282,16 @@ public class WiredHandler {
                 }
             }
 
-            return !Emulator.getPluginManager().fireEvent(new WiredStackExecutedEvent(room, roomUnit, trigger, effects, conditions)).isCancelled();
+            return !Emulator.getPluginManager().fireEvent(new WiredStackExecutedEvent(room, roomUnit, trigger, legacyEffects, legacyConditions)).isCancelled();
         }
 
         return false;
+        } finally {
+            trigger.endProcessing();
+        }
     }
 
-    private static boolean evaluateConditions(THashSet<InteractionWiredCondition> conditions, RoomUnit roomUnit, Room room, Object[] stuff, int evaluationMode, int evaluationValue) {
+    private static boolean evaluateConditions(Collection<InteractionWiredCondition> conditions, RoomUnit roomUnit, Room room, Object[] stuff, int evaluationMode, int evaluationValue) {
         if (conditions == null || conditions.isEmpty()) {
             return true;
         }
@@ -435,10 +452,10 @@ public class WiredHandler {
         return (((long) x) << 32) | (y & 0xffffffffL);
     }
 
-    public static boolean executeEffectsAtTiles(THashSet<RoomTile> tiles, final RoomUnit roomUnit, final Room room, final Object[] stuff) {
+    public static boolean executeEffectsAtTiles(Collection<RoomTile> tiles, final RoomUnit roomUnit, final Room room, final Object[] stuff) {
         for (RoomTile tile : tiles) {
             if (room != null) {
-                THashSet<HabboItem> items = room.getItemsAt(tile);
+                Set<HabboItem> items = room.getItemsAt(tile);
 
                 long millis = room.getCycleTimestamp();
                 for (final HabboItem item : items) {
@@ -513,35 +530,55 @@ public class WiredHandler {
         if (Emulator.getPluginManager().fireEvent(rewardReceived).isCancelled())
             return false;
 
-        if (rewardReceived.value.isEmpty())
+        String rewardType = rewardReceived.type == null ? "" : rewardReceived.type.trim();
+        String rewardValue = rewardReceived.value == null ? "" : rewardReceived.value.trim();
+
+        if (rewardValue.isEmpty())
             return false;
 
-        if (rewardReceived.type.equalsIgnoreCase("credits")) {
-            habbo.giveCredits(Integer.parseInt(rewardReceived.value));
+        if (rewardType.equalsIgnoreCase("credits")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.giveCredits(amount);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
-        } else if (rewardReceived.type.equalsIgnoreCase("diamonds") || rewardReceived.type.equalsIgnoreCase("diamond")) {
-            habbo.givePoints(5, Integer.parseInt(rewardReceived.value));
+        } else if (rewardType.equalsIgnoreCase("diamonds") || rewardType.equalsIgnoreCase("diamond")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.givePoints(5, amount);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
-        } else if (rewardReceived.type.equalsIgnoreCase("pixels")) {
-            habbo.givePixels(Integer.parseInt(rewardReceived.value));
+        } else if (rewardType.equalsIgnoreCase("pixels")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.givePixels(amount);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
-        } else if (rewardReceived.type.startsWith("points")) {
-            int points = Integer.parseInt(rewardReceived.value);
+        } else if (rewardType.startsWith("points")) {
+            Integer points = parsePositiveRewardInteger(rewardValue);
+            if (points == null) return false;
+
             int type = 5;
 
             try {
-                type = Integer.parseInt(rewardReceived.type.replace("points", ""));
-            } catch (Exception e) {
+                int parsedType = Integer.parseInt(rewardType.replace("points", "").trim());
+                if (parsedType > 0) {
+                    type = parsedType;
+                }
+            } catch (NumberFormatException ignored) {
             }
 
             habbo.givePoints(type, points);
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
-        } else if (rewardReceived.type.equalsIgnoreCase("furni")) {
-            Item baseItem = Emulator.getGameEnvironment().getItemManager().getItem(Integer.parseInt(rewardReceived.value));
+        } else if (rewardType.equalsIgnoreCase("furni")) {
+            Integer itemId = parsePositiveRewardInteger(rewardValue);
+            if (itemId == null) return false;
+
+            Item baseItem = Emulator.getGameEnvironment().getItemManager().getItem(itemId);
             if (baseItem == null)
                 return false;
 
@@ -555,12 +592,18 @@ public class WiredHandler {
             habbo.getClient().sendResponse(new InventoryRefreshComposer());
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
-        } else if (rewardReceived.type.equalsIgnoreCase("respect")) {
-            habbo.getHabboStats().respectPointsReceived += Integer.parseInt(rewardReceived.value);
+        } else if (rewardType.equalsIgnoreCase("respect")) {
+            Integer amount = parsePositiveRewardInteger(rewardValue);
+            if (amount == null) return false;
+
+            habbo.getHabboStats().respectPointsReceived += amount;
             completeReward(habbo, wiredBox, reward, WiredRewardAlertComposer.REWARD_RECEIVED_ITEM);
             return true;
-        } else if (rewardReceived.type.equalsIgnoreCase("cata")) {
-            CatalogItem item = Emulator.getGameEnvironment().getCatalogManager().getCatalogItem(Integer.parseInt(rewardReceived.value));
+        } else if (rewardType.equalsIgnoreCase("cata")) {
+            Integer catalogItemId = parsePositiveRewardInteger(rewardValue);
+            if (catalogItemId == null) return false;
+
+            CatalogItem item = Emulator.getGameEnvironment().getCatalogManager().getCatalogItem(catalogItemId);
 
             if (item == null)
                 return false;
@@ -571,6 +614,15 @@ public class WiredHandler {
         }
 
         return false;
+    }
+
+    private static Integer parsePositiveRewardInteger(String value) {
+        try {
+            int parsed = Integer.parseInt(value == null ? "" : value.trim());
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     public static boolean getReward(Habbo habbo, WiredEffectGiveReward wiredBox) {

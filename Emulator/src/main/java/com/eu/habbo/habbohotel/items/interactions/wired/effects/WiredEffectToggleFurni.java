@@ -15,6 +15,7 @@ import com.eu.habbo.habbohotel.items.interactions.games.freeze.InteractionFreeze
 import com.eu.habbo.habbohotel.items.interactions.games.tag.InteractionTagField;
 import com.eu.habbo.habbohotel.items.interactions.games.tag.InteractionTagPole;
 import com.eu.habbo.habbohotel.items.interactions.pets.*;
+import com.eu.habbo.habbohotel.items.interactions.wired.WiredLegacyDataGuard;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
@@ -26,15 +27,16 @@ import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredSourceUtil;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
-import gnu.trove.procedure.TObjectProcedure;
-import gnu.trove.set.hash.THashSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class WiredEffectToggleFurni extends InteractionWiredEffect {
@@ -44,7 +46,7 @@ public class WiredEffectToggleFurni extends InteractionWiredEffect {
 
     public static final WiredEffectType type = WiredEffectType.TOGGLE_STATE;
 
-    private final THashSet<HabboItem> items;
+    private final Set<HabboItem> items;
     private int toggleType = TOGGLE_TYPE_NEXT;
     private int furniSource = WiredSourceUtil.SOURCE_TRIGGER;
 
@@ -90,12 +92,12 @@ public class WiredEffectToggleFurni extends InteractionWiredEffect {
 
     public WiredEffectToggleFurni(ResultSet set, Item baseItem) throws SQLException {
         super(set, baseItem);
-        this.items = new THashSet<>();
+        this.items = new LinkedHashSet<>();
     }
 
     public WiredEffectToggleFurni(int id, int userId, Item item, String extradata, int limitedStack, int limitedSells) {
         super(id, userId, item, extradata, limitedStack, limitedSells);
-        this.items = new THashSet<>();
+        this.items = new LinkedHashSet<>();
     }
 
     @Override
@@ -134,15 +136,11 @@ public class WiredEffectToggleFurni extends InteractionWiredEffect {
 
         if (this.requiresTriggeringUser()) {
             List<Integer> invalidTriggers = new ArrayList<>();
-            room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY()).forEach(new TObjectProcedure<InteractionWiredTrigger>() {
-                @Override
-                public boolean execute(InteractionWiredTrigger object) {
-                    if (!object.isTriggeredByRoomUnit()) {
-                        invalidTriggers.add(object.getBaseItem().getSpriteId());
-                    }
-                    return true;
+            for (InteractionWiredTrigger object : room.getRoomSpecialTypes().getTriggers(this.getX(), this.getY())) {
+                if (!object.isTriggeredByRoomUnit()) {
+                    invalidTriggers.add(object.getBaseItem().getSpriteId());
                 }
-            });
+            }
             message.appendInt(invalidTriggers.size());
             for (Integer i : invalidTriggers) {
                 message.appendInt(i);
@@ -205,11 +203,11 @@ public class WiredEffectToggleFurni extends InteractionWiredEffect {
         Room room = ctx.room();
         Habbo habbo = ctx.actor().map(unit -> room.getHabbo(unit)).orElse(null);
 
-        // Snapshot this.items into a new list to avoid undefined behavior from concurrent
-        // THashSet access (serializeWiredData can modify items from the network thread).
+        // Snapshot this.items into a new list to avoid undefined behavior from concurrent access
+        // (serializeWiredData can modify items from the network thread).
         List<HabboItem> effectiveItems = WiredSourceUtil.resolveItems(ctx, this.furniSource, this.items);
 
-        THashSet<HabboItem> itemsToRemove = new THashSet<>();
+        Set<HabboItem> itemsToRemove = new HashSet<>();
         for (HabboItem item : effectiveItems) {
             if (item == null || item.getRoomId() == 0 || FORBIDDEN_TYPES.stream().anyMatch(a -> a.isAssignableFrom(item.getClass()))) {
                 itemsToRemove.add(item);
@@ -251,12 +249,13 @@ public class WiredEffectToggleFurni extends InteractionWiredEffect {
         this.items.clear();
         String wiredData = set.getString("wired_data");
 
-        if (wiredData.startsWith("{")) {
-            JsonData data = WiredManager.getGson().fromJson(wiredData, JsonData.class);
-            this.setDelay(data.delay);
-            this.toggleType = normalizeToggleType(data.toggleType);
-            this.furniSource = data.furniSource;
-            for (Integer id: data.itemIds) {
+        JsonData jsonData = WiredMovementPayloadGuard.fromJson(wiredData, JsonData.class);
+        if (jsonData != null) {
+            this.setDelay(WiredMovementPayloadGuard.delay(jsonData.delay));
+            this.toggleType = normalizeToggleType(jsonData.toggleType);
+            this.furniSource = WiredMovementPayloadGuard.furniSource(jsonData.furniSource);
+            if (jsonData.itemIds != null) for (Integer id: jsonData.itemIds) {
+                if (id == null) continue;
                 HabboItem item = room.getHabboItem(id);
 
                 if (item instanceof InteractionFreezeBlock || item instanceof InteractionFreezeTile || item instanceof InteractionCrackable) {
@@ -271,21 +270,18 @@ public class WiredEffectToggleFurni extends InteractionWiredEffect {
                 this.furniSource = WiredSourceUtil.SOURCE_SELECTED;
             }
         } else {
-            String[] wiredDataOld = wiredData.split("\t");
+            String[] wiredDataOld = wiredData != null ? wiredData.split("\t") : new String[0];
 
             if (wiredDataOld.length >= 1) {
-                this.setDelay(Integer.parseInt(wiredDataOld[0]));
+                this.setDelay(WiredLegacyDataGuard.parseDelay(wiredDataOld[0]));
             }
             if (wiredDataOld.length == 2) {
                 if (wiredDataOld[1].contains(";")) {
-                    for (String s : wiredDataOld[1].split(";")) {
-                        HabboItem item = room.getHabboItem(Integer.parseInt(s));
-
+                    for (HabboItem item : WiredLegacyDataGuard.parseRoomItems(wiredDataOld[1], room)) {
                         if (item instanceof InteractionFreezeBlock || item instanceof InteractionFreezeTile || item instanceof InteractionCrackable)
                             continue;
 
-                        if (item != null)
-                            this.items.add(item);
+                        this.items.add(item);
                     }
                 }
             }

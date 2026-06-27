@@ -6,12 +6,11 @@ import com.eu.habbo.habbohotel.rooms.RoomChatMessageBubbles;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.messages.outgoing.inventory.InventoryRefreshComposer;
 import com.eu.habbo.threading.runnables.QueryDeleteHabboItems;
-import gnu.trove.map.TIntIntMap;
-import gnu.trove.map.hash.TIntIntHashMap;
-import gnu.trove.map.hash.TIntObjectHashMap;
-import gnu.trove.procedure.TIntIntProcedure;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class RedeemCommand extends Command {
     public RedeemCommand() {
@@ -22,54 +21,63 @@ public class RedeemCommand extends Command {
     public boolean handle(final GameClient gameClient, String[] params) throws Exception {
         if (gameClient.getHabbo().getHabboInfo().getCurrentRoom().getActiveTradeForHabbo(gameClient.getHabbo()) != null)
             return false;
-        ArrayList<HabboItem> items = new ArrayList<>();
+        List<HabboItem> items = new ArrayList<>();
 
         int credits = 0;
         int pixels = 0;
 
-        TIntIntMap points = new TIntIntHashMap();
+        Map<Integer, Integer> points = new HashMap<>();
 
         for (HabboItem item : gameClient.getHabbo().getInventory().getItemsComponent().getItemsAsValueCollection()) {
             if (item.getBaseItem().getName().startsWith("CF_") || item.getBaseItem().getName().startsWith("CFC_") || item.getBaseItem().getName().startsWith("DF_") || item.getBaseItem().getName().startsWith("PF_")) {
                 if (item.getUserId() == gameClient.getHabbo().getHabboInfo().getId()) {
-                    items.add(item);
+                    boolean redeemable = false;
                     if ((item.getBaseItem().getName().startsWith("CF_") || item.getBaseItem().getName().startsWith("CFC_")) && !item.getBaseItem().getName().contains("_diamond_")) {
-                        try {
-                            credits += Integer.parseInt(item.getBaseItem().getName().split("_")[1]);
-                        } catch (Exception e) {
+                        Integer amount = parsePositiveRedeemValue(item.getBaseItem().getName(), 1);
+                        if (amount != null) {
+                            Integer total = addRedeemValue(credits, amount);
+                            if (total != null) {
+                                credits = total;
+                                redeemable = true;
+                            }
                         }
 
                     } else if (item.getBaseItem().getName().startsWith("PF_")) {
-                        try {
-                            pixels += Integer.parseInt(item.getBaseItem().getName().split("_")[1]);
-                        } catch (Exception e) {
+                        Integer amount = parsePositiveRedeemValue(item.getBaseItem().getName(), 1);
+                        if (amount != null) {
+                            Integer total = addRedeemValue(pixels, amount);
+                            if (total != null) {
+                                pixels = total;
+                                redeemable = true;
+                            }
                         }
                     } else if (item.getBaseItem().getName().startsWith("DF_")) {
-                        int pointsType;
-                        int pointsAmount;
+                        Integer pointsType = parsePositiveRedeemValue(item.getBaseItem().getName(), 1);
+                        Integer pointsAmount = parsePositiveRedeemValue(item.getBaseItem().getName(), 2);
 
-                        pointsType = Integer.parseInt(item.getBaseItem().getName().split("_")[1]);
-                        pointsAmount = Integer.parseInt(item.getBaseItem().getName().split("_")[2]);
-
-                        points.adjustOrPutValue(pointsType, pointsAmount, pointsAmount);
+                        if (pointsType != null && pointsAmount != null && addRedeemPoints(points, pointsType, pointsAmount)) {
+                            redeemable = true;
+                        }
                     }
                     else if (item.getBaseItem().getName().startsWith("CF_diamond_")) {
-                        int pointsType;
-                        int pointsAmount;
+                        Integer pointsAmount = parsePositiveRedeemValue(item.getBaseItem().getName(), 2);
 
-                        pointsType = 5;
-                        pointsAmount = Integer.parseInt(item.getBaseItem().getName().split("_")[2]);
+                        if (pointsAmount != null && addRedeemPoints(points, 5, pointsAmount)) {
+                            redeemable = true;
+                        }
+                    }
 
-                        points.adjustOrPutValue(pointsType, pointsAmount, pointsAmount);
+                    if (redeemable) {
+                        items.add(item);
                     }
                 }
             }
         }
 
-        TIntObjectHashMap<HabboItem> deleted = new TIntObjectHashMap<>();
+        List<HabboItem> deleted = new ArrayList<>();
         for (HabboItem item : items) {
             gameClient.getHabbo().getInventory().getItemsComponent().removeHabboItem(item);
-            deleted.put(item.getId(), item);
+            deleted.add(item);
         }
 
         Emulator.getThreading().run(new QueryDeleteHabboItems(deleted));
@@ -89,18 +97,51 @@ public class RedeemCommand extends Command {
         }
 
         if (!points.isEmpty()) {
-            points.forEachEntry(new TIntIntProcedure() {
-                @Override
-                public boolean execute(int a, int b) {
-                    gameClient.getHabbo().givePoints(a, b);
-                    message[0] += " ," + Emulator.getTexts().getValue("seasonal.name." + a) + ": " + b;
-                    return true;
-                }
-            });
+            for (Map.Entry<Integer, Integer> entry : points.entrySet()) {
+                gameClient.getHabbo().givePoints(entry.getKey(), entry.getValue());
+                message[0] += " ," + Emulator.getTexts().getValue("seasonal.name." + entry.getKey()) + ": " + entry.getValue();
+            }
         }
 
         gameClient.getHabbo().whisper(message[0], RoomChatMessageBubbles.ALERT);
 
+        return true;
+    }
+
+    static Integer parsePositiveRedeemValue(String itemName, int index) {
+        if (itemName == null) {
+            return null;
+        }
+
+        String[] parts = itemName.split("_");
+        if (index < 0 || index >= parts.length) {
+            return null;
+        }
+
+        try {
+            int value = Integer.parseInt(parts[index]);
+            return value > 0 ? value : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    static Integer addRedeemValue(int current, int amount) {
+        try {
+            return Math.addExact(current, amount);
+        } catch (ArithmeticException e) {
+            return null;
+        }
+    }
+
+    static boolean addRedeemPoints(Map<Integer, Integer> points, int pointsType, int amount) {
+        int current = points.getOrDefault(pointsType, 0);
+        Integer total = addRedeemValue(current, amount);
+        if (total == null) {
+            return false;
+        }
+
+        points.put(pointsType, total);
         return true;
     }
 }
