@@ -38,7 +38,7 @@ CREATE TABLE `catalog_version_pages` (
   `catalog_type` enum('NORMAL','BUILDER') NOT NULL,
   `page_id` int NOT NULL,
   `parent_id` int NOT NULL DEFAULT -1,
-  `caption_save` varchar(25) NOT NULL DEFAULT '',
+  `caption_save` varchar(128) NOT NULL DEFAULT '',
   `caption` varchar(128) NOT NULL,
   `page_layout` varchar(64) NOT NULL DEFAULT 'default_3x3',
   `icon_color` int NOT NULL DEFAULT 1,
@@ -219,11 +219,15 @@ INSERT INTO `catalog_version_offers`
 SELECT @catalog_active_version_id, 'NORMAL', `id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`,
        `cost_points`, `points_type`, `amount`, `limited_stack`, `order_number`,
        `offer_id`, `song_id`, `extradata`, CAST(`have_offer` AS UNSIGNED), CAST(`club_only` AS UNSIGNED)
-FROM `catalog_items`
+FROM (
+  SELECT `catalog_items`.*,
+         ROW_NUMBER() OVER (PARTITION BY `id` ORDER BY `page_id`, `order_number`, `catalog_name`) AS `snapshot_row`
+  FROM `catalog_items`
+) AS `catalog_items`
 WHERE NOT EXISTS (
   SELECT 1 FROM `catalog_version_offers`
   WHERE `version_id` = @catalog_active_version_id AND `catalog_type` = 'NORMAL'
-);
+) AND `snapshot_row` = 1;
 
 INSERT INTO `catalog_version_offers`
   (`version_id`, `catalog_type`, `offer_id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`,
@@ -231,11 +235,15 @@ INSERT INTO `catalog_version_offers`
    `offer_id_client`, `song_id`, `extradata`, `have_offer`, `club_only`)
 SELECT @catalog_active_version_id, 'BUILDER', `id`, `item_ids`, `page_id`, `catalog_name`, 0,
        0, 0, 1, 0, `order_number`, -1, 0, `extradata`, 1, 0
-FROM `catalog_items_bc`
+FROM (
+  SELECT `catalog_items_bc`.*,
+         ROW_NUMBER() OVER (PARTITION BY `id` ORDER BY `page_id`, `order_number`, `catalog_name`) AS `snapshot_row`
+  FROM `catalog_items_bc`
+) AS `catalog_items_bc`
 WHERE NOT EXISTS (
   SELECT 1 FROM `catalog_version_offers`
   WHERE `version_id` = @catalog_active_version_id AND `catalog_type` = 'BUILDER'
-);
+) AND `snapshot_row` = 1;
 
 -- Create the shared draft from the active snapshot.
 INSERT INTO `catalog_versions`
