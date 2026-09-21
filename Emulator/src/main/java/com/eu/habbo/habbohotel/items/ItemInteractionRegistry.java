@@ -16,7 +16,7 @@ final class ItemInteractionRegistry {
         String key = normalize(interaction.getName());
         ItemInteraction previous = interactionsByName.get(key);
         if (previous != null) {
-            throw new IllegalStateException("Built-in interaction key already registered: " + interaction.getName());
+            return false;
         }
 
         interactionsByName.put(key, interaction);

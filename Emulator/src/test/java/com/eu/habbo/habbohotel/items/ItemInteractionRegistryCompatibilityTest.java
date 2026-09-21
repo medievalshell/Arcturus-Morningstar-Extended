@@ -1,6 +1,7 @@
 package com.eu.habbo.habbohotel.items;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -68,13 +69,13 @@ class ItemInteractionRegistryCompatibilityTest {
     }
 
     @Test
-    void duplicateBuiltInNamesFailFastWithoutChangingTheExistingAliases() {
+    void duplicateBuiltInNamesKeepTheExistingAliases() {
         ItemInteractionRegistry registry = new ItemInteractionRegistry();
         ItemInteraction first = new ItemInteraction("first", InteractionDefault.class);
         ItemInteraction replacement = new ItemInteraction("first", InteractionGate.class);
 
         assertTrue(registry.add(first));
-        assertThrows(IllegalStateException.class, () -> registry.add(replacement));
+        assertFalse(registry.add(replacement));
         assertSame(first, registry.find("FIRST"));
         assertSame(first, registry.find(InteractionDefault.class));
     }
