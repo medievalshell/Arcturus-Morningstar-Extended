@@ -1,33 +1,71 @@
 package com.eu.habbo.habbohotel.users;
 
 import com.eu.habbo.Emulator;
+import com.eu.habbo.habbohotel.GameEnvironment;
 import com.eu.habbo.habbohotel.achievements.AchievementManager;
 import com.eu.habbo.habbohotel.bots.Bot;
+import com.eu.habbo.habbohotel.economy.EconomyLedger;
+import com.eu.habbo.habbohotel.economy.EconomyOperation;
+import com.eu.habbo.habbohotel.economy.EconomyOperationId;
 import com.eu.habbo.habbohotel.gameclients.GameClient;
+import com.eu.habbo.habbohotel.habbicons.HabbiconService;
 import com.eu.habbo.habbohotel.messenger.Messenger;
+import com.eu.habbo.habbohotel.modtool.ModToolBan;
 import com.eu.habbo.habbohotel.pets.Pet;
-import com.eu.habbo.habbohotel.rooms.*;
+import com.eu.habbo.habbohotel.rooms.Room;
+import com.eu.habbo.habbohotel.rooms.RoomChatMessage;
+import com.eu.habbo.habbohotel.rooms.RoomChatMessageBubbles;
+import com.eu.habbo.habbohotel.rooms.RoomUnit;
+import com.eu.habbo.habbohotel.rooms.RoomUnitType;
+import com.eu.habbo.habbohotel.rooms.RoomUserAction;
+import com.eu.habbo.habbohotel.rooms.RoomVisitorQueueSupport;
 import com.eu.habbo.habbohotel.users.inventory.BadgesComponent;
-import com.eu.habbo.messages.outgoing.generic.alerts.*;
-import com.eu.habbo.messages.outgoing.inventory.*;
+import com.eu.habbo.messages.outgoing.generic.alerts.BubbleAlertComposer;
+import com.eu.habbo.messages.outgoing.generic.alerts.BubbleAlertKeys;
+import com.eu.habbo.messages.outgoing.generic.alerts.GenericAlertComposer;
+import com.eu.habbo.messages.outgoing.generic.alerts.MessagesForYouComposer;
+import com.eu.habbo.messages.outgoing.generic.alerts.StaffAlertWithLinkComposer;
+import com.eu.habbo.messages.outgoing.inventory.AddBotComposer;
+import com.eu.habbo.messages.outgoing.inventory.AddHabboItemComposer;
+import com.eu.habbo.messages.outgoing.inventory.AddPetComposer;
+import com.eu.habbo.messages.outgoing.inventory.InventoryBadgesComposer;
+import com.eu.habbo.messages.outgoing.inventory.InventoryRefreshComposer;
+import com.eu.habbo.messages.outgoing.inventory.RemoveBotComposer;
+import com.eu.habbo.messages.outgoing.inventory.RemoveHabboItemComposer;
+import com.eu.habbo.messages.outgoing.inventory.RemovePetComposer;
 import com.eu.habbo.messages.outgoing.rooms.FloodCounterComposer;
 import com.eu.habbo.messages.outgoing.rooms.ForwardToRoomComposer;
-import com.eu.habbo.messages.outgoing.rooms.users.*;
-import com.eu.habbo.messages.outgoing.users.*;
+import com.eu.habbo.messages.outgoing.rooms.users.RoomUserActionComposer;
+import com.eu.habbo.messages.outgoing.rooms.users.RoomUserIgnoredComposer;
+import com.eu.habbo.messages.outgoing.rooms.users.RoomUserRespectComposer;
+import com.eu.habbo.messages.outgoing.rooms.users.RoomUserShoutComposer;
+import com.eu.habbo.messages.outgoing.rooms.users.RoomUserTalkComposer;
+import com.eu.habbo.messages.outgoing.rooms.users.RoomUserWhisperComposer;
+import com.eu.habbo.messages.outgoing.users.AddUserBadgeComposer;
+import com.eu.habbo.messages.outgoing.users.BanInfoComposer;
+import com.eu.habbo.messages.outgoing.users.MutedWhisperComposer;
+import com.eu.habbo.messages.outgoing.users.UserCreditsComposer;
+import com.eu.habbo.messages.outgoing.users.UserCurrencyComposer;
+import com.eu.habbo.messages.outgoing.users.UserPointsComposer;
 import com.eu.habbo.networking.gameserver.GameServerAttributes;
 import com.eu.habbo.plugin.events.users.UserCreditsEvent;
 import com.eu.habbo.plugin.events.users.UserDisconnectEvent;
 import com.eu.habbo.plugin.events.users.UserGetIPAddressEvent;
 import com.eu.habbo.plugin.events.users.UserPointsEvent;
 import it.unimi.dsi.fastutil.ints.IntCollection;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.sql.ResultSet;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Habbo implements Runnable {
 
@@ -44,6 +82,16 @@ public class Habbo implements Runnable {
     private volatile boolean disconnected = false;
     private volatile boolean disconnecting = false;
     public boolean roomBypass = false;
+
+    private HabbiconService habbiconService;
+
+    public HabbiconService getHabbiconService() {
+        return this.habbiconService;
+    }
+
+    void setHabbiconService(HabbiconService habbiconService) {
+        this.habbiconService = habbiconService;
+    }
 
     public Habbo(ResultSet set) {
         this.client = null;
@@ -114,23 +162,54 @@ public class Habbo implements Runnable {
         this.client = client;
     }
 
-
     public boolean connect() {
+        ConnectionSecurityResult security = this.checkConnectionSecurity();
+        if (!security.allowed()) {
+            return false;
+        }
+
+        this.isOnline(true);
+        this.messenger.connectionChanged(this, true, false);
+        Emulator.getGameEnvironment().getRoomManager().loadRoomsForHabbo(this);
+        LOGGER.info(
+                "{} logged in from IP {} using proxyserver {}",
+                this.habboInfo.getUsername(),
+                this.habboInfo.getIpLogin(),
+                security.proxyInfo());
+        LOGGER.info("{} client MachineId = {}", this.habboInfo.getUsername(), this.client.getMachineId());
+        return true;
+    }
+
+    /**
+     * Re-evaluates account, IP, and machine bans for the current connection,
+     * used when resuming a parked session that skips the normal login path.
+     * This resolves and records the resuming connection's IP (and fires
+     * {@link com.eu.habbo.plugin.events.users.UserGetIPAddressEvent}) exactly
+     * as {@link #connect()} does, but does not bring the Habbo online or load
+     * rooms. Returns true when the connection is allowed to proceed.
+     */
+    public boolean passesConnectionSecurityChecks() {
+        return this.checkConnectionSecurity().allowed();
+    }
+
+    private ConnectionSecurityResult checkConnectionSecurity() {
+        if (this.client == null || this.client.getChannel() == null) {
+            return new ConnectionSecurityResult(false, "missing client channel");
+        }
+
         String ip = "";
         String proxyInfo = "";
 
         String wsIp = this.client.getChannel().attr(GameServerAttributes.WS_IP).get();
         if (wsIp != null && !wsIp.isEmpty()) {
             ip = wsIp;
-            SocketAddress address = this.client.getChannel().remoteAddress();
-            proxyInfo = ((InetSocketAddress) address).getAddress().getHostAddress();
-        } else if (!Emulator.getConfig().getBoolean("networking.tcp.proxy") && this.client.getChannel().remoteAddress() != null) {
-            SocketAddress address = this.client.getChannel().remoteAddress();
-            ip = ((InetSocketAddress) address).getAddress().getHostAddress();
+            proxyInfo = remoteIp(this.client.getChannel().remoteAddress());
+        } else if (!Emulator.getConfig().getBoolean("networking.tcp.proxy")
+                && this.client.getChannel().remoteAddress() != null) {
+            ip = remoteIp(this.client.getChannel().remoteAddress());
             proxyInfo = "- no proxy server used";
         } else {
-            SocketAddress address = this.client.getChannel().remoteAddress();
-            proxyInfo = ((InetSocketAddress) address).getAddress().getHostAddress();
+            proxyInfo = remoteIp(this.client.getChannel().remoteAddress());
         }
 
         if (Emulator.getPluginManager().isRegistered(UserGetIPAddressEvent.class, true)) {
@@ -144,80 +223,132 @@ public class Habbo implements Runnable {
             this.habboInfo.setIpLogin(ip);
         }
 
-        // The Nitro client sends the UniqueID (machine fingerprint) packet right
-        // AFTER the SSO ticket, so client.getMachineId() may still be null here.
-        // Do NOT reject the login for a missing machineId — MachineIDEvent sets it
-        // and enforces the MAC ban as soon as the UniqueID packet arrives. Only
-        // MAC-ban check here when the fingerprint is already available.
+        ModToolBan accountBan =
+                Emulator.getGameEnvironment().getModToolManager().checkForBan(this.habboInfo.getId());
+
+        if (accountBan != null) {
+            // Official class_2799 BanInfo: the client turns it into the ban alert with the expiry
+            // (HabboAlertDialogManager.handleBanInfoMessage) before the connection goes away.
+            this.client.sendResponse(new BanInfoComposer(
+                    this.habboInfo.getId(),
+                    accountBan.reason,
+                    Math.max(-1, accountBan.expireDate - Emulator.getIntUnixTimestamp()),
+                    ""));
+            return new ConnectionSecurityResult(false, proxyInfo);
+        }
+
+        // Nitro sends its machine fingerprint after SSO. Check it here only when
+        // already available; MachineIDEvent enforces a later-arriving fingerprint.
         String machineId = this.client.getMachineId();
         if (machineId != null && !machineId.isEmpty()) {
             this.habboInfo.setMachineID(machineId);
-
             if (Emulator.getGameEnvironment().getModToolManager().hasMACBan(this.client)) {
-                return false;
+                return new ConnectionSecurityResult(false, proxyInfo);
             }
         }
 
         if (Emulator.getGameEnvironment().getModToolManager().hasIPBan(this.habboInfo.getIpLogin())) {
-            return false;
+            return new ConnectionSecurityResult(false, proxyInfo);
         }
-        this.isOnline(true);
 
-        this.messenger.connectionChanged(this, true, false);
-
-        Emulator.getGameEnvironment().getRoomManager().loadRoomsForHabbo(this);
-        LOGGER.info("{} logged in from IP {} using proxyserver {}", this.habboInfo.getUsername(), this.habboInfo.getIpLogin(), proxyInfo);
-        LOGGER.info("{} client MachineId = {}", this.habboInfo.getUsername(), this.client.getMachineId());
-        return true;
+        return new ConnectionSecurityResult(true, proxyInfo);
     }
 
-
-    public synchronized void disconnect() {
-        if (!Emulator.isShuttingDown) {
-            if (Emulator.getPluginManager().fireEvent(new UserDisconnectEvent(this)).isCancelled()) return;
+    private static String remoteIp(SocketAddress address) {
+        if (address instanceof InetSocketAddress inetAddress && inetAddress.getAddress() != null) {
+            return inetAddress.getAddress().getHostAddress();
         }
+        return "";
+    }
 
-        if (this.disconnected || this.disconnecting)
-            return;
+    private record ConnectionSecurityResult(boolean allowed, String proxyInfo) {}
 
-        this.disconnecting = true;
-
-        try {
-            if (this.getHabboInfo().getCurrentRoom() != null) {
-                Emulator.getGameEnvironment().getRoomManager().leaveRoom(this, this.getHabboInfo().getCurrentRoom());
-            }
-            if (this.getHabboInfo().getRoomQueueId() > 0) {
-                Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getHabboInfo().getRoomQueueId());
-
-                if (room != null) {
-                    room.removeFromQueue(this);
+    public void disconnect() {
+        GameEnvironment environment = Emulator.getGameEnvironment();
+        HabboManager habboManager = environment.getHabboManager();
+        boolean shuttingDown = Emulator.isShuttingDown;
+        var pluginManager = Emulator.getPluginManager();
+        DisconnectPersistenceGate.Registration persistenceRegistration;
+        synchronized (this) {
+            if (this.disconnected || this.disconnecting) {
+                if (!shuttingDown) {
+                    pluginManager.fireEvent(new UserDisconnectEvent(this));
                 }
+                return;
             }
-        } catch (Exception e) {
-            LOGGER.error("Caught exception", e);
+
+            persistenceRegistration = habboManager.beginDisconnectPersistence(this.habboInfo.getId());
+            boolean cancelled;
+            try {
+                cancelled = !shuttingDown
+                        && pluginManager
+                                .fireEvent(new UserDisconnectEvent(this))
+                                .isCancelled();
+            } catch (RuntimeException exception) {
+                habboManager.cancelDisconnectPersistence(persistenceRegistration);
+                throw exception;
+            }
+            if (cancelled) {
+                habboManager.cancelDisconnectPersistence(persistenceRegistration);
+                return;
+            }
+            this.disconnecting = true;
+
+            try {
+                if (this.getHabboInfo().getCurrentRoom() != null) {
+                    environment
+                            .getRoomManager()
+                            .leaveRoom(this, this.getHabboInfo().getCurrentRoom());
+                }
+                if (this.getHabboInfo().getRoomQueueId() > 0) {
+                    Room room = environment
+                            .getRoomManager()
+                            .getRoom(this.getHabboInfo().getRoomQueueId());
+
+                    if (room != null) {
+                        room.removeFromQueue(this);
+                    }
+                }
+                // AIR 13 room queue: a logout leaves every full-room queue.
+                RoomVisitorQueueSupport.removeEverywhere(this);
+            } catch (Exception e) {
+                LOGGER.error("Caught exception", e);
+            }
+
+            try {
+                environment.getGuideManager().userLogsOut(this);
+                this.habboInfo.setOnline(false);
+                this.needsUpdate(true);
+                this.messenger.connectionChanged(this, false, false);
+                this.messenger.dispose();
+            } catch (Exception e) {
+                LOGGER.error("Caught exception", e);
+            } finally {
+                this.disconnected = true;
+                try {
+                    environment.getRoomManager().unloadRoomsForHabbo(this);
+                } catch (Exception e) {
+                    LOGGER.error("Unable to unload owned rooms during disconnect", e);
+                }
+                try {
+                    habboManager.removeHabbo(this);
+                } catch (Exception e) {
+                    LOGGER.error("Unable to remove disconnected user", e);
+                }
+                this.client = null;
+            }
         }
 
-        try {
-            Emulator.getGameEnvironment().getGuideManager().userLogsOut(this);
-            this.isOnline(false);
-            this.needsUpdate(true);
-            this.run();
-            this.getInventory().dispose();
-            this.messenger.connectionChanged(this, false, false);
-            this.messenger.dispose();
-            this.disconnected = true;
-            AchievementManager.saveAchievements(this);
+        habboManager.submitDisconnectPersistence(persistenceRegistration, this::persistDisconnect);
+    }
 
-            this.habboStats.dispose();
-        } catch (Exception e) {
-            LOGGER.error("Caught exception", e);
-            return;
-        } finally {
-            Emulator.getGameEnvironment().getRoomManager().unloadRoomsForHabbo(this);
-            Emulator.getGameEnvironment().getHabboManager().removeHabbo(this);
-        }
+    private void persistDisconnect() {
+        this.run();
+        this.getInventory().dispose();
+        AchievementManager.saveAchievements(this);
+        com.eu.habbo.habbohotel.quests.QuestProgressEvents.unload(this.habboInfo.getId());
+        this.habboStats.dispose();
         LOGGER.info("{} disconnected.", this.habboInfo.getUsername());
-        this.client = null;
     }
 
     @Override
@@ -228,123 +359,284 @@ public class Habbo implements Runnable {
         }
     }
 
-
     public boolean hasPermission(String key) {
         return this.hasPermission(key, false);
     }
-
 
     public boolean hasPermission(String key, boolean hasRoomRights) {
         return Emulator.getGameEnvironment().getPermissionsManager().hasPermission(this, key, hasRoomRights);
     }
 
-
     public void giveCredits(int credits) {
-        if (credits == 0)
-            return;
+        this.giveCredits(credits, "economy.api.credits");
+    }
+
+    public void giveCredits(int credits, String reason) {
+        this.giveCredits(
+                credits,
+                reason,
+                EconomyOperationId.create("credits:" + this.getHabboInfo().getId()),
+                this.getHabboInfo().getId());
+    }
+
+    public void giveCredits(int credits, String reason, String operationId, Integer actorId) {
+        if (credits == 0) return;
 
         UserCreditsEvent event = new UserCreditsEvent(this, credits);
-        if (Emulator.getPluginManager().fireEvent(event).isCancelled())
-            return;
+        if (Emulator.getPluginManager().fireEvent(event).isCancelled()) return;
 
-        this.getHabboInfo().addCredits(event.credits);
+        try {
+            LedgerWalletMutation.execute(
+                    this,
+                    new EconomyOperation(
+                            operationId,
+                            this.getHabboInfo().getId(),
+                            actorId,
+                            event.credits > 0 ? "credit_grant" : "credit_debit",
+                            reason,
+                            EconomyLedger.CREDITS,
+                            event.credits,
+                            null,
+                            ""));
+        } catch (Exception exception) {
+            LOGGER.error(
+                    "Unable to apply audited credit mutation for user {}",
+                    this.getHabboInfo().getId(),
+                    exception);
+            return;
+        }
 
         if (this.client != null) this.client.sendResponse(new UserCreditsComposer(this));
     }
 
-
-    public void givePixels(int pixels) {
-        if (pixels == 0)
-            return;
-
-
-        UserPointsEvent event = new UserPointsEvent(this, pixels, 0);
-        if (Emulator.getPluginManager().fireEvent(event).isCancelled())
-            return;
-
-        this.getHabboInfo().addPixels(event.points);
-        if (this.client != null) this.client.sendResponse(new UserCurrencyComposer(this));
+    public boolean tryTakeCredits(int credits) {
+        return this.tryTakeCredits(
+                credits,
+                "economy.api.credits",
+                EconomyOperationId.create("credits:" + this.getHabboInfo().getId()),
+                this.getHabboInfo().getId());
     }
 
+    public boolean tryTakeCredits(int credits, String reason, String operationId, Integer actorId) {
+        if (credits <= 0) {
+            return false;
+        }
+
+        UserCreditsEvent event = new UserCreditsEvent(this, -credits);
+        if (Emulator.getPluginManager().fireEvent(event).isCancelled() || event.credits != -credits) {
+            return false;
+        }
+
+        try {
+            LedgerWalletMutation.execute(
+                    this,
+                    new EconomyOperation(
+                            operationId,
+                            this.getHabboInfo().getId(),
+                            actorId,
+                            "credit_debit",
+                            reason,
+                            EconomyLedger.CREDITS,
+                            event.credits,
+                            null,
+                            ""));
+        } catch (IllegalArgumentException exception) {
+            return false;
+        } catch (Exception exception) {
+            LOGGER.error(
+                    "Unable to apply audited credit debit for user {}",
+                    this.getHabboInfo().getId(),
+                    exception);
+            return false;
+        }
+
+        if (this.client != null) this.client.sendResponse(new UserCreditsComposer(this));
+        return true;
+    }
+
+    public void givePixels(int pixels) {
+        this.givePoints(0, pixels, "economy.api.pixels");
+    }
+
+    public void givePixels(int pixels, String reason) {
+        this.givePoints(0, pixels, reason);
+    }
 
     public void givePoints(int points) {
         this.givePoints(Emulator.getConfig().getInt("seasonal.primary.type"), points);
     }
 
-
     public void givePoints(int type, int points) {
-        if (points == 0)
-            return;
-
-        UserPointsEvent event = new UserPointsEvent(this, points, type);
-        if (Emulator.getPluginManager().fireEvent(event).isCancelled())
-            return;
-
-        this.getHabboInfo().addCurrencyAmount(event.type, event.points);
-        if (this.client != null)
-            this.client.sendResponse(new UserPointsComposer(this.getHabboInfo().getCurrencyAmount(type), event.points, event.type));
+        this.givePoints(type, points, "economy.api.currency");
     }
 
+    public void givePoints(int type, int points, String reason) {
+        this.givePoints(
+                type,
+                points,
+                reason,
+                EconomyOperationId.create("currency:" + this.getHabboInfo().getId() + ":" + type),
+                this.getHabboInfo().getId());
+    }
+
+    public void givePoints(int type, int points, String reason, String operationId, Integer actorId) {
+        if (points == 0) return;
+
+        UserPointsEvent event = new UserPointsEvent(this, points, type);
+        if (Emulator.getPluginManager().fireEvent(event).isCancelled()) return;
+
+        try {
+            LedgerWalletMutation.execute(
+                    this,
+                    new EconomyOperation(
+                            operationId,
+                            this.getHabboInfo().getId(),
+                            actorId,
+                            event.points > 0 ? "currency_grant" : "currency_debit",
+                            reason,
+                            event.type,
+                            event.points,
+                            null,
+                            ""));
+        } catch (Exception exception) {
+            LOGGER.error(
+                    "Unable to apply audited currency mutation for user {}",
+                    this.getHabboInfo().getId(),
+                    exception);
+            return;
+        }
+        if (this.client != null) {
+            if (event.type == 0) this.client.sendResponse(new UserCurrencyComposer(this));
+            else
+                this.client.sendResponse(new UserPointsComposer(
+                        this.getHabboInfo().getCurrencyAmount(event.type), event.points, event.type));
+        }
+    }
+
+    public boolean tryTakePoints(int type, int points) {
+        return this.tryTakePoints(
+                type,
+                points,
+                "economy.api.currency",
+                EconomyOperationId.create("currency:" + this.getHabboInfo().getId() + ":" + type),
+                this.getHabboInfo().getId());
+    }
+
+    public boolean tryTakePoints(int type, int points, String reason, String operationId, Integer actorId) {
+        if (points <= 0) {
+            return false;
+        }
+
+        UserPointsEvent event = new UserPointsEvent(this, -points, type);
+        if (Emulator.getPluginManager().fireEvent(event).isCancelled()
+                || event.type != type
+                || event.points != -points) {
+            return false;
+        }
+
+        try {
+            LedgerWalletMutation.execute(
+                    this,
+                    new EconomyOperation(
+                            operationId,
+                            this.getHabboInfo().getId(),
+                            actorId,
+                            "currency_debit",
+                            reason,
+                            event.type,
+                            event.points,
+                            null,
+                            ""));
+        } catch (IllegalArgumentException exception) {
+            return false;
+        } catch (Exception exception) {
+            LOGGER.error(
+                    "Unable to apply audited currency debit for user {}",
+                    this.getHabboInfo().getId(),
+                    exception);
+            return false;
+        }
+
+        if (this.client != null) {
+            this.client.sendResponse(new UserPointsComposer(
+                    this.getHabboInfo().getCurrencyAmount(event.type), event.points, event.type));
+        }
+        return true;
+    }
 
     public void whisper(String message) {
         this.whisper(message, this.habboStats.chatColor);
     }
 
-
     public void whisper(String message, RoomChatMessageBubbles bubble) {
         if (this.getRoomUnit().isInRoom()) {
-            this.client.sendResponse(new RoomUserWhisperComposer(new RoomChatMessage(message, this.getRoomUnit(), bubble)));
+            this.client.sendResponse(
+                    new RoomUserWhisperComposer(new RoomChatMessage(message, this.getRoomUnit(), bubble)));
         }
     }
 
+    public void whisperLocalized(
+            String textKey, String placeholder, String replacement, RoomChatMessageBubbles bubble) {
+        this.whisper(this.getText(textKey).replace(placeholder, replacement), bubble);
+    }
+
+    public void whisperLocalized(String textKey, RoomChatMessageBubbles bubble) {
+        this.whisper(this.getText(textKey), bubble);
+    }
+
+    private String getText(String key) {
+        return Emulator.getTexts().getValue(key);
+    }
 
     public void talk(String message) {
         this.talk(message, this.habboStats.chatColor);
     }
 
-
     public void talk(String message, RoomChatMessageBubbles bubble) {
         if (this.getRoomUnit().isInRoom()) {
-            this.getHabboInfo().getCurrentRoom().sendComposer(new RoomUserTalkComposer(new RoomChatMessage(message, this.getRoomUnit(), bubble)).compose());
+            this.getHabboInfo()
+                    .getCurrentRoom()
+                    .sendComposer(new RoomUserTalkComposer(new RoomChatMessage(message, this.getRoomUnit(), bubble))
+                            .compose());
         }
     }
-
 
     public void shout(String message) {
         this.shout(message, this.habboStats.chatColor);
     }
 
-
     public void shout(String message, RoomChatMessageBubbles bubble) {
         if (this.getRoomUnit().isInRoom()) {
-            this.getHabboInfo().getCurrentRoom().sendComposer(new RoomUserShoutComposer(new RoomChatMessage(message, this.getRoomUnit(), bubble)).compose());
+            this.getHabboInfo()
+                    .getCurrentRoom()
+                    .sendComposer(new RoomUserShoutComposer(new RoomChatMessage(message, this.getRoomUnit(), bubble))
+                            .compose());
         }
     }
 
-
     public void alert(String message) {
         if (Emulator.getConfig().getBoolean("hotel.alert.oldstyle")) {
-            this.client.sendResponse(new MessagesForYouComposer(new String[]{message}));
+            this.client.sendResponse(new MessagesForYouComposer(new String[] {message}));
         } else {
             this.client.sendResponse(new GenericAlertComposer(message));
         }
     }
 
+    public void alertLocalized(String textKey) {
+        this.alert(this.getText(textKey));
+    }
 
     public void alert(String[] messages) {
         this.client.sendResponse(new MessagesForYouComposer(messages));
     }
 
-
     public void alertWithUrl(String message, String url) {
         this.client.sendResponse(new StaffAlertWithLinkComposer(message, url));
     }
 
-
     public void goToRoom(int id) {
         this.client.sendResponse(new ForwardToRoomComposer(id));
     }
-
 
     public void addFurniture(HabboItem item) {
         this.habboInventory.getItemsComponent().addItem(item);
@@ -352,31 +644,26 @@ public class Habbo implements Runnable {
         this.client.sendResponse(new InventoryRefreshComposer());
     }
 
-
     public void addFurniture(Collection<HabboItem> items) {
         this.habboInventory.getItemsComponent().addItems(items);
         this.client.sendResponse(new AddHabboItemComposer(items));
         this.client.sendResponse(new InventoryRefreshComposer());
     }
 
-
     public void removeFurniture(HabboItem item) {
         this.habboInventory.getItemsComponent().removeHabboItem(item);
         this.client.sendResponse(new RemoveHabboItemComposer(item.getId()));
     }
-
 
     public void addBot(Bot bot) {
         this.habboInventory.getBotsComponent().addBot(bot);
         this.client.sendResponse(new AddBotComposer(bot));
     }
 
-
     public void removeBot(Bot bot) {
         this.habboInventory.getBotsComponent().removeBot(bot);
         this.client.sendResponse(new RemoveBotComposer(bot));
     }
-
 
     public void deleteBot(Bot bot) {
         this.removeBot(bot);
@@ -384,18 +671,15 @@ public class Habbo implements Runnable {
         Emulator.getGameEnvironment().getBotManager().deleteBot(bot);
     }
 
-
     public void addPet(Pet pet) {
         this.habboInventory.getPetsComponent().addPet(pet);
         this.client.sendResponse(new AddPetComposer(pet));
     }
 
-
     public void removePet(Pet pet) {
         this.habboInventory.getPetsComponent().removePet(pet);
         this.client.sendResponse(new RemovePetComposer(pet));
     }
-
 
     public boolean addBadge(String code) {
         return this.addBadge(code, "");
@@ -406,12 +690,13 @@ public class Habbo implements Runnable {
             HabboBadge badge = BadgesComponent.createBadge(code, this);
             this.habboInventory.getBadgesComponent().addBadge(badge);
             this.client.sendResponse(new AddUserBadgeComposer(badge, senderName));
-            this.client.sendResponse(new AddHabboItemComposer(badge.getId(), AddHabboItemComposer.AddHabboItemCategory.BADGE));
+            this.client.sendResponse(
+                    new AddHabboItemComposer(badge.getId(), AddHabboItemComposer.AddHabboItemCategory.BADGE));
 
             Map<String, String> keys = new HashMap<>();
             keys.put("display", "BUBBLE");
             keys.put("image", "${image.library.url}album1584/" + badge.getCode() + ".gif");
-            keys.put("message", Emulator.getTexts().getValue("commands.generic.cmd_badge.received"));
+            keys.put("message", this.getText("commands.generic.cmd_badge.received"));
             this.client.sendResponse(new BubbleAlertComposer(BubbleAlertKeys.RECEIVED_BADGE.key, keys));
 
             return true;
@@ -419,7 +704,6 @@ public class Habbo implements Runnable {
 
         return false;
     }
-
 
     public void deleteBadge(HabboBadge badge) {
         if (badge != null) {
@@ -459,7 +743,6 @@ public class Habbo implements Runnable {
     public int noobStatus() {
 
         return 1;
-
     }
 
     public void clearCaches() {
@@ -485,17 +768,23 @@ public class Habbo implements Runnable {
         this.habboStats.ltdPurchaseLog = newLog;
     }
 
-
     public void respect(Habbo target) {
         if (target != null && target != this) {
             target.getHabboStats().respectPointsReceived++;
             this.getHabboStats().respectPointsGiven++;
             this.getHabboStats().respectPointsToGive--;
             this.getHabboInfo().getCurrentRoom().sendComposer(new RoomUserRespectComposer(target).compose());
-            this.getHabboInfo().getCurrentRoom().sendComposer(new RoomUserActionComposer(this.getRoomUnit(), RoomUserAction.THUMB_UP).compose());
+            this.getHabboInfo()
+                    .getCurrentRoom()
+                    .sendComposer(new RoomUserActionComposer(this.getRoomUnit(), RoomUserAction.THUMB_UP).compose());
 
-            AchievementManager.progressAchievement(this, Emulator.getGameEnvironment().getAchievementManager().getAchievement("RespectGiven"));
-            AchievementManager.progressAchievement(target, Emulator.getGameEnvironment().getAchievementManager().getAchievement("RespectEarned"));
+            AchievementManager.progressAchievement(
+                    this, Emulator.getGameEnvironment().getAchievementManager().getAchievement("RespectGiven"));
+            AchievementManager.progressAchievement(
+                    target,
+                    Emulator.getGameEnvironment().getAchievementManager().getAchievement("RespectEarned"));
+            com.eu.habbo.habbohotel.quests.QuestProgressEvents.progress(
+                    this, com.eu.habbo.habbohotel.quests.QuestGoalType.GIVE_RESPECT, 1);
 
             this.getHabboInfo().getCurrentRoom().unIdle(this);
             this.getHabboInfo().getCurrentRoom().dance(this.getRoomUnit(), DanceType.NONE);
@@ -505,7 +794,7 @@ public class Habbo implements Runnable {
     public Set<Integer> getForbiddenClothing() {
         IntCollection clothingIDs = this.getInventory().getWardrobeComponent().getClothing();
 
-        return Emulator.getGameEnvironment().getCatalogManager().clothing.values().stream()
+        return Emulator.getGameEnvironment().getCatalogManager().getClothingSnapshot().values().stream()
                 .filter(c -> !clothingIDs.contains(c.id))
                 .map(c -> c.setId)
                 .flatMap(c -> Arrays.stream(c).boxed())

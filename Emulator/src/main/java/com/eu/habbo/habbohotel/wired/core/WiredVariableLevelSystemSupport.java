@@ -8,7 +8,6 @@ import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraVariable
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraVariableReference;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.WiredVariableDefinitionInfo;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -22,20 +21,24 @@ public final class WiredVariableLevelSystemSupport {
     public static final int TARGET_FURNI = 1;
     public static final int TARGET_ROOM = 3;
 
+    // Ceiling on level/anchor counts, mirrored from WiredExtraVariableLevelUpSystem
+    // (kept private in both to stay off the frozen wired plugin ABI). Bounds the
+    // per-read threshold-table loops so a huge maxLevel/anchor can't hang the room.
+    private static final int MAX_LEVEL = 10_000;
     private static final int SYNTHETIC_USER_OFFSET = 700_000_000;
     private static final int SYNTHETIC_FURNI_OFFSET = 800_000_000;
     private static final int SYNTHETIC_ROOM_OFFSET = 900_000_000;
     private static final int SYNTHETIC_STRIDE = 16;
 
-    private WiredVariableLevelSystemSupport() {
-    }
+    private WiredVariableLevelSystemSupport() {}
 
     public static WiredExtraVariableLevelUpSystem getLevelSystem(Room room, InteractionWiredExtra definition) {
         if (room == null || definition == null || room.getRoomSpecialTypes() == null) {
             return null;
         }
 
-        Collection<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(definition.getX(), definition.getY());
+        Collection<InteractionWiredExtra> extras =
+                room.getRoomSpecialTypes().getExtras(definition.getX(), definition.getY());
         if (extras == null || extras.isEmpty()) {
             return null;
         }
@@ -49,30 +52,75 @@ public final class WiredVariableLevelSystemSupport {
         return null;
     }
 
-    public static List<WiredVariableDefinitionInfo> getDerivedDefinitions(Room room, int targetType, InteractionWiredExtra definitionExtra, WiredVariableDefinitionInfo baseDefinition) {
+    /**
+     * Find the co-located derived-variable box (the level-up box OR any {@link WiredDerivedVariableBox},
+     * e.g. a quest box) for a base variable definition. At most one box per definition; first wins.
+     */
+    public static InteractionWiredExtra getDerivedBox(Room room, InteractionWiredExtra definition) {
+        if (room == null || definition == null || room.getRoomSpecialTypes() == null) {
+            return null;
+        }
+
+        Collection<InteractionWiredExtra> extras =
+                room.getRoomSpecialTypes().getExtras(definition.getX(), definition.getY());
+        if (extras == null || extras.isEmpty()) {
+            return null;
+        }
+
+        for (InteractionWiredExtra extra : WiredExecutionOrderUtil.sort(extras)) {
+            if (extra instanceof WiredExtraVariableLevelUpSystem || extra instanceof WiredDerivedVariableBox) {
+                return extra;
+            }
+        }
+
+        return null;
+    }
+
+    private static List<Integer> boxSubvariables(InteractionWiredExtra box) {
+        if (box instanceof WiredExtraVariableLevelUpSystem lvl) return lvl.getSelectedSubvariables();
+        if (box instanceof WiredDerivedVariableBox derived) return derived.getSelectedSubvariables();
+        return Collections.emptyList();
+    }
+
+    private static boolean boxHasSubvariable(InteractionWiredExtra box, int subType) {
+        if (box instanceof WiredExtraVariableLevelUpSystem lvl) return lvl.hasSubvariable(subType);
+        if (box instanceof WiredDerivedVariableBox derived) return derived.hasSubvariable(subType);
+        return false;
+    }
+
+    private static String boxSubvariableKey(InteractionWiredExtra box, int subType) {
+        if (box instanceof WiredDerivedVariableBox derived) return derived.subvariableKey(subType);
+        return getSubvariableKey(subType);
+    }
+
+    public static List<WiredVariableDefinitionInfo> getDerivedDefinitions(
+            Room room,
+            int targetType,
+            InteractionWiredExtra definitionExtra,
+            WiredVariableDefinitionInfo baseDefinition) {
         if (room == null || definitionExtra == null || baseDefinition == null || !baseDefinition.hasValue()) {
             return Collections.emptyList();
         }
 
-        WiredExtraVariableLevelUpSystem levelSystem = getLevelSystem(room, definitionExtra);
-        if (levelSystem == null) {
+        InteractionWiredExtra box = getDerivedBox(room, definitionExtra);
+        if (box == null) {
             return Collections.emptyList();
         }
 
         List<WiredVariableDefinitionInfo> result = new ArrayList<>();
 
-        for (int subvariableType : levelSystem.getSelectedSubvariables()) {
+        for (int subvariableType : boxSubvariables(box)) {
             result.add(new WiredVariableDefinitionInfo(
-                createSyntheticItemId(targetType, baseDefinition.getItemId(), subvariableType),
-                baseDefinition.getName() + "." + getSubvariableKey(subvariableType),
-                true,
-                baseDefinition.getAvailability(),
-                false,
-                true
-            ));
+                    createSyntheticItemId(targetType, baseDefinition.getItemId(), subvariableType),
+                    baseDefinition.getName() + "." + boxSubvariableKey(box, subvariableType),
+                    true,
+                    baseDefinition.getAvailability(),
+                    false,
+                    true));
         }
 
-        result.sort(Comparator.comparing(WiredVariableDefinitionInfo::getName, String.CASE_INSENSITIVE_ORDER).thenComparingInt(WiredVariableDefinitionInfo::getItemId));
+        result.sort(Comparator.comparing(WiredVariableDefinitionInfo::getName, String.CASE_INSENSITIVE_ORDER)
+                .thenComparingInt(WiredVariableDefinitionInfo::getItemId));
         return result;
     }
 
@@ -84,13 +132,12 @@ public final class WiredVariableLevelSystemSupport {
         }
 
         return new WiredVariableDefinitionInfo(
-            derived.syntheticItemId,
-            derived.variableName,
-            true,
-            derived.baseDefinition.getAvailability(),
-            false,
-            true
-        );
+                derived.syntheticItemId,
+                derived.variableName,
+                true,
+                derived.baseDefinition.getAvailability(),
+                false,
+                true);
     }
 
     public static DerivedDefinition resolveDerivedDefinition(Room room, int targetType, int syntheticItemId) {
@@ -109,23 +156,30 @@ public final class WiredVariableLevelSystemSupport {
             return null;
         }
 
-        WiredExtraVariableLevelUpSystem levelSystem = getLevelSystem(room, baseExtra);
-        if (levelSystem == null || !levelSystem.hasSubvariable(decoded.subvariableType)) {
+        InteractionWiredExtra box = getDerivedBox(room, baseExtra);
+        if (box == null || !boxHasSubvariable(box, decoded.subvariableType)) {
             return null;
         }
 
         return new DerivedDefinition(
-            syntheticItemId,
-            decoded.baseDefinitionItemId,
-            decoded.subvariableType,
-            baseDefinition.getName() + "." + getSubvariableKey(decoded.subvariableType),
-            baseDefinition,
-            levelSystem
-        );
+                syntheticItemId,
+                decoded.baseDefinitionItemId,
+                decoded.subvariableType,
+                baseDefinition.getName() + "." + boxSubvariableKey(box, decoded.subvariableType),
+                baseDefinition,
+                box);
     }
 
-    public static Integer getDerivedValue(WiredExtraVariableLevelUpSystem levelSystem, int subvariableType, Integer baseValue) {
-        if (levelSystem == null || baseValue == null) {
+    public static Integer getDerivedValue(InteractionWiredExtra box, int subvariableType, Integer baseValue) {
+        if (box == null || baseValue == null) {
+            return null;
+        }
+
+        if (box instanceof WiredDerivedVariableBox derived) {
+            return derived.derive(subvariableType, baseValue);
+        }
+
+        if (!(box instanceof WiredExtraVariableLevelUpSystem levelSystem)) {
             return null;
         }
 
@@ -158,14 +212,19 @@ public final class WiredVariableLevelSystemSupport {
 
         return switch (targetType) {
             case TARGET_FURNI -> extra instanceof WiredExtraFurniVariable;
-            case TARGET_ROOM -> (extra instanceof WiredExtraRoomVariable)
-                || (extra instanceof WiredExtraVariableReference && ((WiredExtraVariableReference) extra).isRoomReference());
-            default -> (extra instanceof WiredExtraUserVariable)
-                || (extra instanceof WiredExtraVariableReference && ((WiredExtraVariableReference) extra).isUserReference());
+            case TARGET_ROOM ->
+                (extra instanceof WiredExtraRoomVariable)
+                        || (extra instanceof WiredExtraVariableReference
+                                && ((WiredExtraVariableReference) extra).isRoomReference());
+            default ->
+                (extra instanceof WiredExtraUserVariable)
+                        || (extra instanceof WiredExtraVariableReference
+                                && ((WiredExtraVariableReference) extra).isUserReference());
         };
     }
 
-    private static WiredVariableDefinitionInfo createBaseDefinitionInfo(Room room, InteractionWiredExtra extra, int targetType) {
+    private static WiredVariableDefinitionInfo createBaseDefinitionInfo(
+            Room room, InteractionWiredExtra extra, int targetType) {
         if (room == null || extra == null) {
             return null;
         }
@@ -173,31 +232,36 @@ public final class WiredVariableLevelSystemSupport {
         if (targetType == TARGET_FURNI && extra instanceof WiredExtraFurniVariable) {
             WiredExtraFurniVariable definition = (WiredExtraFurniVariable) extra;
             return new WiredVariableDefinitionInfo(
-                definition.getId(),
-                definition.getVariableName(),
-                definition.hasValue(),
-                definition.getAvailability(),
-                WiredVariableTextConnectorSupport.isTextConnected(room, definition),
-                false
-            );
+                    definition.getId(),
+                    definition.getVariableName(),
+                    definition.hasValue(),
+                    definition.getAvailability(),
+                    WiredVariableTextConnectorSupport.isTextConnected(room, definition),
+                    false);
         }
 
         if (targetType == TARGET_USER) {
             if (extra instanceof WiredExtraUserVariable) {
                 WiredExtraUserVariable definition = (WiredExtraUserVariable) extra;
                 return new WiredVariableDefinitionInfo(
-                    definition.getId(),
-                    definition.getVariableName(),
-                    definition.hasValue(),
-                    definition.getAvailability(),
-                    WiredVariableTextConnectorSupport.isTextConnected(room, definition),
-                    false
-                );
+                        definition.getId(),
+                        definition.getVariableName(),
+                        definition.hasValue(),
+                        definition.getAvailability(),
+                        WiredVariableTextConnectorSupport.isTextConnected(room, definition),
+                        false);
             }
 
-            if (extra instanceof WiredExtraVariableReference && ((WiredExtraVariableReference) extra).isUserReference()) {
+            if (extra instanceof WiredExtraVariableReference
+                    && ((WiredExtraVariableReference) extra).isUserReference()) {
                 WiredExtraVariableReference reference = (WiredExtraVariableReference) extra;
-                return new WiredVariableDefinitionInfo(reference.getId(), reference.getVariableName(), reference.hasValue(), reference.getAvailability(), false, reference.isReadOnly());
+                return new WiredVariableDefinitionInfo(
+                        reference.getId(),
+                        reference.getVariableName(),
+                        reference.hasValue(),
+                        reference.getAvailability(),
+                        false,
+                        reference.isReadOnly());
             }
         }
 
@@ -205,18 +269,24 @@ public final class WiredVariableLevelSystemSupport {
             if (extra instanceof WiredExtraRoomVariable) {
                 WiredExtraRoomVariable definition = (WiredExtraRoomVariable) extra;
                 return new WiredVariableDefinitionInfo(
-                    definition.getId(),
-                    definition.getVariableName(),
-                    definition.hasValue(),
-                    definition.getAvailability(),
-                    WiredVariableTextConnectorSupport.isTextConnected(room, definition),
-                    false
-                );
+                        definition.getId(),
+                        definition.getVariableName(),
+                        definition.hasValue(),
+                        definition.getAvailability(),
+                        WiredVariableTextConnectorSupport.isTextConnected(room, definition),
+                        false);
             }
 
-            if (extra instanceof WiredExtraVariableReference && ((WiredExtraVariableReference) extra).isRoomReference()) {
+            if (extra instanceof WiredExtraVariableReference
+                    && ((WiredExtraVariableReference) extra).isRoomReference()) {
                 WiredExtraVariableReference reference = (WiredExtraVariableReference) extra;
-                return new WiredVariableDefinitionInfo(reference.getId(), reference.getVariableName(), reference.hasValue(), reference.getAvailability(), false, reference.isReadOnly());
+                return new WiredVariableDefinitionInfo(
+                        reference.getId(),
+                        reference.getVariableName(),
+                        reference.hasValue(),
+                        reference.getAvailability(),
+                        false,
+                        reference.isReadOnly());
             }
         }
 
@@ -224,11 +294,12 @@ public final class WiredVariableLevelSystemSupport {
     }
 
     private static int createSyntheticItemId(int targetType, int baseDefinitionItemId, int subvariableType) {
-        int offset = switch (targetType) {
-            case TARGET_FURNI -> SYNTHETIC_FURNI_OFFSET;
-            case TARGET_ROOM -> SYNTHETIC_ROOM_OFFSET;
-            default -> SYNTHETIC_USER_OFFSET;
-        };
+        int offset =
+                switch (targetType) {
+                    case TARGET_FURNI -> SYNTHETIC_FURNI_OFFSET;
+                    case TARGET_ROOM -> SYNTHETIC_ROOM_OFFSET;
+                    default -> SYNTHETIC_USER_OFFSET;
+                };
 
         return offset + (baseDefinitionItemId * SYNTHETIC_STRIDE) + (subvariableType + 1);
     }
@@ -259,7 +330,9 @@ public final class WiredVariableLevelSystemSupport {
         int baseDefinitionItemId = localValue / SYNTHETIC_STRIDE;
         int subvariableType = encodedSubvariable - 1;
 
-        if (baseDefinitionItemId <= 0 || subvariableType < 0 || subvariableType >= WiredExtraVariableLevelUpSystem.SUBVARIABLE_COUNT) {
+        if (baseDefinitionItemId <= 0
+                || subvariableType < 0
+                || subvariableType >= WiredExtraVariableLevelUpSystem.SUBVARIABLE_COUNT) {
             return null;
         }
 
@@ -321,13 +394,15 @@ public final class WiredVariableLevelSystemSupport {
             progressPercent = 100;
         } else {
             int delta = Math.max(0, nextThreshold - currentThreshold);
-            progressPercent = (delta <= 0) ? 100 : Math.max(0, Math.min(100, (int) Math.floor((progressXp * 100D) / delta)));
+            progressPercent =
+                    (delta <= 0) ? 100 : Math.max(0, Math.min(100, (int) Math.floor((progressXp * 100D) / delta)));
         }
 
         int totalXpRequired = isAtMax ? currentThreshold : nextThreshold;
         int xpRemaining = Math.max(0, totalXpRequired - currentXp);
 
-        return new LevelProgress(currentLevel, currentXp, progressXp, progressPercent, totalXpRequired, xpRemaining, isAtMax, maxLevel);
+        return new LevelProgress(
+                currentLevel, currentXp, progressXp, progressPercent, totalXpRequired, xpRemaining, isAtMax, maxLevel);
     }
 
     private static List<LevelEntry> buildThresholdEntries(WiredExtraVariableLevelUpSystem levelSystem) {
@@ -446,7 +521,10 @@ public final class WiredVariableLevelSystemSupport {
             Integer level = parseInteger(line.substring(0, separatorIndex));
             Integer xp = parseInteger(line.substring(separatorIndex + 1));
 
-            if (level == null || xp == null || level <= 0 || xp < 0) {
+            // Bound the anchor level: the interpolation loop below runs
+            // [currentLevel+1, nextLevel), so an unbounded manual anchor level
+            // (e.g. "999999999=1") pegs the room thread on every read.
+            if (level == null || xp == null || level <= 0 || xp < 0 || level > MAX_LEVEL) {
                 continue;
             }
 
@@ -482,9 +560,15 @@ public final class WiredVariableLevelSystemSupport {
         private final int subvariableType;
         private final String variableName;
         private final WiredVariableDefinitionInfo baseDefinition;
-        private final WiredExtraVariableLevelUpSystem levelSystem;
+        private final InteractionWiredExtra levelSystem;
 
-        public DerivedDefinition(int syntheticItemId, int baseDefinitionItemId, int subvariableType, String variableName, WiredVariableDefinitionInfo baseDefinition, WiredExtraVariableLevelUpSystem levelSystem) {
+        public DerivedDefinition(
+                int syntheticItemId,
+                int baseDefinitionItemId,
+                int subvariableType,
+                String variableName,
+                WiredVariableDefinitionInfo baseDefinition,
+                InteractionWiredExtra levelSystem) {
             this.syntheticItemId = syntheticItemId;
             this.baseDefinitionItemId = baseDefinitionItemId;
             this.subvariableType = subvariableType;
@@ -505,7 +589,7 @@ public final class WiredVariableLevelSystemSupport {
             return this.baseDefinition;
         }
 
-        public WiredExtraVariableLevelUpSystem getLevelSystem() {
+        public InteractionWiredExtra getLevelSystem() {
             return this.levelSystem;
         }
     }
@@ -538,7 +622,15 @@ public final class WiredVariableLevelSystemSupport {
         private final boolean isAtMax;
         private final int maxLevel;
 
-        private LevelProgress(int currentLevel, int currentXp, int progressXp, int progressPercent, int totalXpRequired, int xpRemaining, boolean isAtMax, int maxLevel) {
+        private LevelProgress(
+                int currentLevel,
+                int currentXp,
+                int progressXp,
+                int progressPercent,
+                int totalXpRequired,
+                int xpRemaining,
+                boolean isAtMax,
+                int maxLevel) {
             this.currentLevel = currentLevel;
             this.currentXp = currentXp;
             this.progressXp = progressXp;

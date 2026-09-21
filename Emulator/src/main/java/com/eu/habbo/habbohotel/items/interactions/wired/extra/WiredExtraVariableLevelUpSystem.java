@@ -1,5 +1,6 @@
 package com.eu.habbo.habbohotel.items.interactions.wired.extra;
 
+import com.eu.habbo.WiredCompatibilityDiagnostics;
 import com.eu.habbo.habbohotel.gameclients.GameClient;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredExtra;
@@ -8,7 +9,6 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.messages.ServerMessage;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -33,6 +33,13 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
 
     private static final int DEFAULT_STEP_SIZE = 100;
     private static final int DEFAULT_MAX_LEVEL = 10;
+    // Hard ceiling on the level count. Consumers rebuild the full threshold
+    // table on every variable read (WiredVariableLevelSystemSupport), so an
+    // unbounded maxLevel or manual anchor level is a room-thread DoS.
+    // Kept private (not public) so it stays off the frozen wired plugin ABI
+    // (WiredPublicSurfaceCompatibilityTest); WiredVariableLevelSystemSupport
+    // holds its own private copy of the same cap.
+    private static final int MAX_LEVEL = 10_000;
     private static final int DEFAULT_FIRST_LEVEL_XP = 100;
     private static final int DEFAULT_INCREASE_FACTOR = 100;
     private static final int MAX_MANUAL_TEXT_LENGTH = 4096;
@@ -49,7 +56,8 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
         super(set, baseItem);
     }
 
-    public WiredExtraVariableLevelUpSystem(int id, int userId, Item item, String extradata, int limitedStack, int limitedSells) {
+    public WiredExtraVariableLevelUpSystem(
+            int id, int userId, Item item, String extradata, int limitedStack, int limitedSells) {
         super(id, userId, item, extradata, limitedStack, limitedSells);
     }
 
@@ -66,15 +74,15 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
 
     @Override
     public String getWiredData() {
-        return WiredManager.getGson().toJson(new JsonData(
-            this.mode,
-            this.stepSize,
-            this.maxLevel,
-            this.firstLevelXp,
-            this.increaseFactor,
-            this.interpolationText,
-            this.getSelectedSubvariables()
-        ));
+        return WiredManager.getGson()
+                .toJson(new JsonData(
+                        this.mode,
+                        this.stepSize,
+                        this.maxLevel,
+                        this.firstLevelXp,
+                        this.increaseFactor,
+                        this.interpolationText,
+                        this.getSelectedSubvariables()));
     }
 
     @Override
@@ -116,8 +124,7 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
     }
 
     @Override
-    public void onWalk(RoomUnit roomUnit, Room room, Object[] objects) {
-    }
+    public void onWalk(RoomUnit roomUnit, Room room, Object[] objects) {}
 
     @Override
     public boolean hasConfiguration() {
@@ -150,8 +157,8 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
 
     public boolean hasSubvariable(int subvariableType) {
         return subvariableType >= 0
-            && subvariableType < SUBVARIABLE_COUNT
-            && ((this.subvariableMask & (1 << subvariableType)) != 0);
+                && subvariableType < SUBVARIABLE_COUNT
+                && ((this.subvariableMask & (1 << subvariableType)) != 0);
     }
 
     public List<Integer> getSelectedSubvariables() {
@@ -192,6 +199,8 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
                 return (data != null) ? data : new JsonData();
             }
         } catch (Exception ignored) {
+            WiredCompatibilityDiagnostics.record(
+                    WiredCompatibilityDiagnostics.FailurePoint.EXTRA_LEVEL_UP_JSON, ignored);
         }
 
         JsonData fallback = new JsonData();
@@ -212,7 +221,7 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
     }
 
     private static int normalizeMaxLevel(int value) {
-        return Math.max(1, (value > 0) ? value : DEFAULT_MAX_LEVEL);
+        return Math.min(MAX_LEVEL, Math.max(1, (value > 0) ? value : DEFAULT_MAX_LEVEL));
     }
 
     private static String normalizeInterpolationText(String value) {
@@ -254,10 +263,16 @@ public class WiredExtraVariableLevelUpSystem extends InteractionWiredExtra {
         String interpolationText = "";
         List<Integer> subvariables = null;
 
-        JsonData() {
-        }
+        JsonData() {}
 
-        JsonData(int mode, int stepSize, int maxLevel, int firstLevelXp, int increaseFactor, String interpolationText, List<Integer> subvariables) {
+        JsonData(
+                int mode,
+                int stepSize,
+                int maxLevel,
+                int firstLevelXp,
+                int increaseFactor,
+                String interpolationText,
+                List<Integer> subvariables) {
             this.mode = mode;
             this.stepSize = stepSize;
             this.maxLevel = maxLevel;

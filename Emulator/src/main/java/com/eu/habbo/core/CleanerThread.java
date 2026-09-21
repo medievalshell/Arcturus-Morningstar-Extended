@@ -2,18 +2,18 @@ package com.eu.habbo.core;
 
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.guilds.forums.ForumThread;
+import com.eu.habbo.habbohotel.messenger.history.MessengerHistoryServices;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.incoming.friends.SearchUserEvent;
 import com.eu.habbo.messages.outgoing.users.UserDataComposer;
 import com.eu.habbo.threading.runnables.AchievementUpdater;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class CleanerThread implements Runnable {
 
@@ -27,6 +27,7 @@ public class CleanerThread implements Runnable {
     private static final int REMOVE_INACTIVE_TOURS = 600;
     private static final int SAVE_ERROR_LOGS = 30;
     private static final int CLEAR_CACHED_VALUES = 60 * 60;
+    private static final int CLEAN_MESSENGER_HISTORY = 60 * 60;
     private static final int CALLBACK_TIME = 60 * 15;
 
     private static int LAST_HOF_RELOAD = Emulator.getIntUnixTimestamp();
@@ -38,6 +39,7 @@ public class CleanerThread implements Runnable {
     private static int LAST_DAILY_REFILL = Emulator.getIntUnixTimestamp();
     private static int LAST_CALLBACK = Emulator.getIntUnixTimestamp();
     private static int LAST_HABBO_CACHE_CLEARED = Emulator.getIntUnixTimestamp();
+    private static int LAST_MESSENGER_HISTORY_CLEANED = Emulator.getIntUnixTimestamp();
 
     public CleanerThread() {
         this.databaseCleanup();
@@ -100,9 +102,17 @@ public class CleanerThread implements Runnable {
             LAST_HABBO_CACHE_CLEARED = time;
         }
 
+        if (time - LAST_MESSENGER_HISTORY_CLEANED > CLEAN_MESSENGER_HISTORY) {
+            try {
+                MessengerHistoryServices.create().cleanupRetention();
+            } catch (RuntimeException exception) {
+                LOGGER.error("Unable to clean messenger history", exception);
+            }
+            LAST_MESSENGER_HISTORY_CLEANED = time;
+        }
+
         SearchUserEvent.cleanExpiredCache();
     }
-
 
     void databaseCleanup() {
         this.refillDailyRespects();
@@ -114,10 +124,12 @@ public class CleanerThread implements Runnable {
                 statement.execute("UPDATE rooms SET users = '0' WHERE users > 0");
                 statement.execute("DELETE FROM room_mutes WHERE ends < " + time);
                 statement.execute("DELETE FROM room_bans WHERE ends < " + time);
-                statement.execute("DELETE users_favorite_rooms FROM users_favorite_rooms LEFT JOIN rooms ON room_id = rooms.id WHERE rooms.id IS NULL");
+                statement.execute(
+                        "DELETE users_favorite_rooms FROM users_favorite_rooms LEFT JOIN rooms ON room_id = rooms.id WHERE rooms.id IS NULL");
             }
 
-            try (PreparedStatement statement = connection.prepareStatement("UPDATE users_effects SET total = total - 1 WHERE activation_timestamp + duration < ? AND activation_timestamp > 0 AND duration > 0")) {
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "UPDATE users_effects SET total = total - 1 WHERE activation_timestamp + duration < ? AND activation_timestamp > 0 AND duration > 0")) {
                 statement.setInt(1, Emulator.getIntUnixTimestamp());
                 statement.execute();
             }
@@ -133,18 +145,28 @@ public class CleanerThread implements Runnable {
     }
 
     public void refillDailyRespects() {
-        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("UPDATE users_settings SET daily_respect_points = ?, daily_pet_respect_points = ?")) {
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "UPDATE users_settings SET daily_respect_points = ?, daily_pet_respect_points = ?, daily_respect_replenishes = ?")) {
             statement.setInt(1, Emulator.getConfig().getInt("hotel.daily.respect"));
             statement.setInt(2, Emulator.getConfig().getInt("hotel.daily.respect.pets"));
+            // Official respectReplenishesLeft: how many daily-respect buybacks the day grants.
+            statement.setInt(3, Emulator.getConfig().getInt("hotel.daily.respect.replenishes", 1));
             statement.executeUpdate();
         } catch (SQLException e) {
             LOGGER.error("Caught SQL exception", e);
         }
 
         if (Emulator.isReady) {
-            for (Habbo habbo : Emulator.getGameEnvironment().getHabboManager().getOnlineHabbos().values()) {
+            for (Habbo habbo : Emulator.getGameEnvironment()
+                    .getHabboManager()
+                    .getOnlineHabbos()
+                    .values()) {
                 habbo.getHabboStats().respectPointsToGive = Emulator.getConfig().getInt("hotel.daily.respect");
-                habbo.getHabboStats().petRespectPointsToGive = Emulator.getConfig().getInt("hotel.daily.respect.pets");
+                habbo.getHabboStats().petRespectPointsToGive =
+                        Emulator.getConfig().getInt("hotel.daily.respect.pets");
+                habbo.getHabboStats().respectReplenishesLeft =
+                        Emulator.getConfig().getInt("hotel.daily.respect.replenishes", 1);
                 habbo.getClient().sendResponse(new UserDataComposer(habbo));
             }
         }
@@ -152,7 +174,10 @@ public class CleanerThread implements Runnable {
 
     private void clearCachedValues() {
         Habbo habbo;
-        for (Map.Entry<Integer, Habbo> map : Emulator.getGameEnvironment().getHabboManager().getOnlineHabbos().entrySet()) {
+        for (Map.Entry<Integer, Habbo> map : Emulator.getGameEnvironment()
+                .getHabboManager()
+                .getOnlineHabbos()
+                .entrySet()) {
             habbo = map.getValue();
 
             try {

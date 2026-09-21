@@ -5,7 +5,6 @@ import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.messages.ISerialize;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.threading.runnables.UpdateModToolIssue;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -31,6 +30,19 @@ public class ModToolIssue implements ISerialize {
     public int commentId = -1;
     public HabboItem photoItem = null;
 
+    /**
+     * What the reporter's own "my reports" window shows (AIR 13 `MyReportStatus`): when
+     * the report was decided, whether the decision carried a sanction, and where the
+     * appeal stands. {@code closedTimestamp} stays 0 while the ticket is still open.
+     */
+    public volatile int closedTimestamp = 0;
+
+    public volatile boolean sanctioned = false;
+    public volatile boolean sanctionGivenByAutoModeration = false;
+    public volatile int appealState = MyReportStatus.APPEAL_NONE;
+    public volatile int appealTimestamp = 0;
+    public volatile int appealResolvedTimestamp = 0;
+
     public ModToolIssue(ResultSet set) throws SQLException {
         this.id = set.getInt("id");
         this.state = ModToolTicketState.getState(set.getInt("state"));
@@ -48,6 +60,12 @@ public class ModToolIssue implements ISerialize {
         this.groupId = set.getInt("group_id");
         this.threadId = set.getInt("thread_id");
         this.commentId = set.getInt("comment_id");
+        this.closedTimestamp = set.getInt("closed_timestamp");
+        this.sanctioned = set.getInt("sanctioned") == 1;
+        this.sanctionGivenByAutoModeration = set.getInt("sanction_auto") == 1;
+        this.appealState = set.getInt("appeal_state");
+        this.appealTimestamp = set.getInt("appeal_timestamp");
+        this.appealResolvedTimestamp = set.getInt("appeal_resolved_timestamp");
 
         int photoItemId = set.getInt("photo_item_id");
 
@@ -61,7 +79,14 @@ public class ModToolIssue implements ISerialize {
         }
     }
 
-    public ModToolIssue(int senderId, String senderUserName, int reportedId, String reportedUsername, int reportedRoomId, String message, ModToolTicketType type) {
+    public ModToolIssue(
+            int senderId,
+            String senderUserName,
+            int reportedId,
+            String reportedUsername,
+            int reportedRoomId,
+            String message,
+            ModToolTicketType type) {
         this.state = ModToolTicketState.OPEN;
         this.timestamp = Emulator.getIntUnixTimestamp();
         this.priority = 0;
@@ -77,19 +102,19 @@ public class ModToolIssue implements ISerialize {
 
     @Override
     public void serialize(ServerMessage message) {
-        message.appendInt(this.id); //ID
-        message.appendInt(this.state.getState()); //STATE
-        message.appendInt(this.type.getType()); //TYPE
-        message.appendInt(this.category); //CATEGORY ID
-        message.appendInt(((Emulator.getIntUnixTimestamp() - this.timestamp))); //TIME IN MS AGO
-        message.appendInt(this.priority); //PRIORITY
+        message.appendInt(this.id); // ID
+        message.appendInt(this.state.getState()); // STATE
+        message.appendInt(this.type.getType()); // TYPE
+        message.appendInt(this.category); // CATEGORY ID
+        message.appendInt(((Emulator.getIntUnixTimestamp() - this.timestamp))); // TIME IN MS AGO
+        message.appendInt(this.priority); // PRIORITY
         message.appendInt(1);
-        message.appendInt(this.senderId); //Reporter user ID
-        message.appendString(this.senderUsername); //Reporter user name.
-        message.appendInt(this.reportedId); //Reported user ID.
-        message.appendString(this.reportedUsername); //Reported user name.
-        message.appendInt(this.modId); //ADMIN User ID?
-        message.appendString(this.modName); //ADMIN User name?
+        message.appendInt(this.senderId); // Reporter user ID
+        message.appendString(this.senderUsername); // Reporter user name.
+        message.appendInt(this.reportedId); // Reported user ID.
+        message.appendString(this.reportedUsername); // Reported user name.
+        message.appendInt(this.modId); // ADMIN User ID?
+        message.appendString(this.modName); // ADMIN User name?
         message.appendString(this.message);
         message.appendInt(0);
 
@@ -106,6 +131,6 @@ public class ModToolIssue implements ISerialize {
     }
 
     public void updateInDatabase() {
-        Emulator.getThreading().run(new UpdateModToolIssue(this));
+        Emulator.getThreading().runPersistence(new UpdateModToolIssue(this));
     }
 }

@@ -1,0 +1,94 @@
+package com.eu.habbo.messages.incoming.rooms.items;
+
+import com.eu.habbo.habbohotel.items.interactions.wired.chest.ChestStorage;
+import com.eu.habbo.habbohotel.items.interactions.wired.chest.InteractionWiredChest;
+import com.eu.habbo.habbohotel.rooms.Room;
+import com.eu.habbo.habbohotel.users.Habbo;
+import com.eu.habbo.habbohotel.users.HabboItem;
+import com.eu.habbo.messages.incoming.MessageHandler;
+import com.eu.habbo.messages.outgoing.rooms.items.ChestDataComposer;
+import com.eu.habbo.messages.outgoing.rooms.items.ChestUpgradeResultComposer;
+
+/**
+ * Buys extra chest capacity: {@code int itemId, int quantity}. Each step adds
+ * {@link ChestStorage#CAPACITY_STEP} (+5000) and costs {@link #COST_CREDITS} credits +
+ * {@link #COST_DIAMONDS} diamonds (points type {@link #DIAMOND_TYPE}). All-or-nothing.
+ *
+ * <p>Only the chest's owner can buy for it — room rights let someone use a chest, not spend on it,
+ * which is the rule the official window states in its greyed-out tooltip.
+ *
+ * <p>Every refusal answers with a {@link ChestUpgradeResultComposer} code rather than returning in
+ * silence, so the window can say what went wrong instead of appearing to have ignored the click.
+ */
+public class ChestUpgradeCapacityEvent extends MessageHandler {
+    public static final int COST_CREDITS = 10;
+    public static final int COST_DIAMONDS = 10;
+    public static final int DIAMOND_TYPE = 5;
+    private static final int MAX_QUANTITY = 10;
+
+    @Override
+    public int getRatelimit() {
+        return 500;
+    }
+
+    @Override
+    public void handle() throws Exception {
+        Habbo habbo = this.client.getHabbo();
+        if (habbo == null) return;
+
+        Room room = habbo.getHabboInfo().getCurrentRoom();
+        if (room == null) return;
+
+        int itemId = this.packet.readInt();
+        int quantity = this.packet.readInt();
+        if (quantity <= 0) return;
+        quantity = Math.min(quantity, MAX_QUANTITY);
+
+        HabboItem item = room.getHabboItem(itemId);
+        if (!(item instanceof InteractionWiredChest chest)) {
+            this.refuse(itemId, ChestUpgradeResultComposer.RESULT_CHEST_GONE);
+            return;
+        }
+
+        if (habbo.getHabboInfo().getId() != chest.getUserId()) {
+            this.refuse(itemId, ChestUpgradeResultComposer.RESULT_NOT_OWNER);
+            return;
+        }
+
+        // A starter chest is a taste, not a foundation: it does not grow.
+        if (chest.isStarterChest()) {
+            this.refuse(itemId, ChestUpgradeResultComposer.RESULT_STARTER_CHEST);
+            return;
+        }
+
+        ChestStorage c = chest.getContents();
+        if (c.getCapacityMax() + (ChestStorage.CAPACITY_STEP * quantity) > ChestStorage.MAX_CAPACITY) {
+            this.refuse(itemId, ChestUpgradeResultComposer.RESULT_AT_CAPACITY);
+            return;
+        }
+
+        int totalCredits = COST_CREDITS * quantity;
+        int totalDiamonds = COST_DIAMONDS * quantity;
+
+        if (habbo.getHabboInfo().getCredits() < totalCredits
+                || habbo.getHabboInfo().getCurrencyAmount(DIAMOND_TYPE) < totalDiamonds) {
+            this.refuse(itemId, ChestUpgradeResultComposer.RESULT_NOT_ENOUGH_CURRENCY);
+            return;
+        }
+
+        habbo.giveCredits(-totalCredits);
+        habbo.givePoints(DIAMOND_TYPE, -totalDiamonds);
+
+        // Not setCapacityMax: a chest that was using all its room should end up bigger, not just
+        // allowed to be bigger.
+        c.growCapacity(ChestStorage.CAPACITY_STEP * quantity);
+        chest.persistContents(room);
+
+        this.client.sendResponse(new ChestDataComposer(chest, habbo));
+        this.client.sendResponse(new ChestUpgradeResultComposer(itemId, ChestUpgradeResultComposer.RESULT_OK));
+    }
+
+    private void refuse(int itemId, int resultCode) {
+        this.client.sendResponse(new ChestUpgradeResultComposer(itemId, resultCode));
+    }
+}

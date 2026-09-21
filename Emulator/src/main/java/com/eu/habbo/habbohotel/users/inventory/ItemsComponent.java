@@ -1,6 +1,7 @@
 package com.eu.habbo.habbohotel.users.inventory;
 
 import com.eu.habbo.Emulator;
+import com.eu.habbo.habbohotel.items.FurnitureType;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.habbohotel.users.HabboInventory;
@@ -11,9 +12,6 @@ import com.eu.habbo.plugin.events.inventory.InventoryItemsAddedEvent;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -21,6 +19,8 @@ import java.sql.SQLException;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ItemsComponent {
     private static final Logger LOGGER = LoggerFactory.getLogger(ItemsComponent.class);
@@ -37,13 +37,16 @@ public class ItemsComponent {
     public static Int2ObjectMap<HabboItem> loadItems(Habbo habbo) {
         Int2ObjectMap<HabboItem> itemsList = new Int2ObjectOpenHashMap<>();
 
-        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("SELECT items.* FROM items LEFT JOIN builders_club_items ON builders_club_items.item_id = items.id WHERE items.room_id = ? AND items.user_id = ? AND builders_club_items.item_id IS NULL")) {
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT items.* FROM items LEFT JOIN builders_club_items ON builders_club_items.item_id = items.id WHERE items.room_id = ? AND items.user_id = ? AND builders_club_items.item_id IS NULL")) {
             statement.setInt(1, 0);
             statement.setInt(2, habbo.getHabboInfo().getId());
             try (ResultSet set = statement.executeQuery()) {
                 while (set.next()) {
                     try {
-                        HabboItem item = Emulator.getGameEnvironment().getItemManager().loadHabboItem(set);
+                        HabboItem item =
+                                Emulator.getGameEnvironment().getItemManager().loadHabboItem(set);
 
                         if (item != null) {
                             itemsList.put(set.getInt("id"), item);
@@ -75,6 +78,15 @@ public class ItemsComponent {
         synchronized (this.items) {
             this.items.put(event.item.getId(), event.item);
         }
+
+        this.inventory.getUnseenItemsComponent().markUnseen(unseenCategory(event.item), event.item.getId());
+    }
+
+    /** Official unseen categories: 1 for floor furni, 2 for wall furni. */
+    private static int unseenCategory(HabboItem item) {
+        return item.getBaseItem() != null && item.getBaseItem().getType() == FurnitureType.WALL
+                ? UnseenItemsComponent.CATEGORY_WALL_ITEM
+                : UnseenItemsComponent.CATEGORY_FLOOR_ITEM;
     }
 
     public void addItems(Collection<HabboItem> items) {
@@ -127,6 +139,41 @@ public class ItemsComponent {
         }
     }
 
+    public boolean takeHabboItemsAtomically(Collection<HabboItem> requestedItems) {
+        if (requestedItems == null || requestedItems.isEmpty()) return false;
+
+        Set<HabboItem> uniqueItems = new HashSet<>(requestedItems);
+        if (uniqueItems.size() != requestedItems.size()) return false;
+
+        synchronized (this.items) {
+            for (HabboItem item : uniqueItems) {
+                if (item == null || this.items.get(item.getId()) != item) return false;
+            }
+
+            for (HabboItem item : uniqueItems) {
+                InventoryItemRemovedEvent event = new InventoryItemRemovedEvent(this.inventory, item);
+
+                if (Emulator.getPluginManager().fireEvent(event).isCancelled()
+                        || event.item == null
+                        || event.item.getId() != item.getId()) return false;
+            }
+
+            for (HabboItem item : uniqueItems) this.items.remove(item.getId());
+
+            return true;
+        }
+    }
+
+    public void restoreHabboItemsAfterFailedTake(Collection<HabboItem> requestedItems) {
+        if (requestedItems == null || requestedItems.isEmpty()) return;
+
+        synchronized (this.items) {
+            for (HabboItem item : requestedItems) {
+                if (item != null) this.items.put(item.getId(), item);
+            }
+        }
+    }
+
     public Int2ObjectMap<HabboItem> getItems() {
         return this.items;
     }
@@ -142,11 +189,12 @@ public class ItemsComponent {
     public void dispose() {
         synchronized (this.items) {
             if (!this.items.isEmpty()) {
-                try (Connection connection = Emulator.getDatabase().getDataSource().getConnection()) {
+                try (Connection connection =
+                        Emulator.getDatabase().getDataSource().getConnection()) {
                     try (PreparedStatement updateStmt = connection.prepareStatement(
                             "UPDATE items SET user_id = ?, room_id = ?, wall_pos = ?, x = ?, y = ?, z = ?, rot = ?, extra_data = ?, limited_data = ? WHERE id = ?")) {
-                        try (PreparedStatement deleteStmt = connection.prepareStatement(
-                                "DELETE FROM items WHERE id = ?")) {
+                        try (PreparedStatement deleteStmt =
+                                connection.prepareStatement("DELETE FROM items WHERE id = ?")) {
 
                             int updateCount = 0;
                             int deleteCount = 0;

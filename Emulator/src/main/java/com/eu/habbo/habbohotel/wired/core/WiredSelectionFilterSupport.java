@@ -9,7 +9,6 @@ import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraFilterUs
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.users.HabboItem;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -18,8 +17,7 @@ import java.util.List;
 final class WiredSelectionFilterSupport {
     private static final ThreadLocal<Integer> FILTER_DEPTH = ThreadLocal.withInitial(() -> 0);
 
-    private WiredSelectionFilterSupport() {
-    }
+    private WiredSelectionFilterSupport() {}
 
     static void applySelectorFilters(Room room, HabboItem triggerItem, WiredContext ctx) {
         if (ctx == null) {
@@ -27,11 +25,13 @@ final class WiredSelectionFilterSupport {
         }
 
         if (ctx.targets().isItemsModifiedBySelector()) {
-            ctx.targets().setItems(filterItems(room, triggerItem, ctx, ctx.targets().items()));
+            ctx.targets()
+                    .setItems(filterItems(room, triggerItem, ctx, ctx.targets().items()));
         }
 
         if (ctx.targets().isUsersModifiedBySelector()) {
-            ctx.targets().setUsers(filterUsers(room, triggerItem, ctx, ctx.targets().users()));
+            ctx.targets()
+                    .setUsers(filterUsers(room, triggerItem, ctx, ctx.targets().users()));
         }
     }
 
@@ -42,7 +42,8 @@ final class WiredSelectionFilterSupport {
             return items;
         }
 
-        Collection<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(triggerItem.getX(), triggerItem.getY());
+        Collection<InteractionWiredExtra> extras =
+                room.getRoomSpecialTypes().getExtras(triggerItem.getX(), triggerItem.getY());
         if (extras == null || extras.isEmpty()) {
             return items;
         }
@@ -52,7 +53,12 @@ final class WiredSelectionFilterSupport {
 
         for (InteractionWiredExtra extra : extras) {
             if (extra instanceof WiredExtraFilterFurni) {
-                furniLimit = Math.min(furniLimit, ((WiredExtraFilterFurni) extra).getAmount());
+                // A filter that was never configured carries 0, which means "no limit" rather than
+                // "nothing": applying it would silently empty every selection the stack makes.
+                int amount = ((WiredExtraFilterFurni) extra).getAmount();
+                if (amount > 0) {
+                    furniLimit = Math.min(furniLimit, amount);
+                }
             } else if (extra instanceof WiredExtraFilterFurniByVariable) {
                 variableFilters.add((WiredExtraFilterFurniByVariable) extra);
             }
@@ -86,7 +92,8 @@ final class WiredSelectionFilterSupport {
             return users;
         }
 
-        Collection<InteractionWiredExtra> extras = room.getRoomSpecialTypes().getExtras(triggerItem.getX(), triggerItem.getY());
+        Collection<InteractionWiredExtra> extras =
+                room.getRoomSpecialTypes().getExtras(triggerItem.getX(), triggerItem.getY());
         if (extras == null || extras.isEmpty()) {
             return users;
         }
@@ -96,7 +103,11 @@ final class WiredSelectionFilterSupport {
 
         for (InteractionWiredExtra extra : extras) {
             if (extra instanceof WiredExtraFilterUser) {
-                userLimit = Math.min(userLimit, ((WiredExtraFilterUser) extra).getAmount());
+                // Same as the furni filter: 0 is the unconfigured state and must not limit anything.
+                int amount = ((WiredExtraFilterUser) extra).getAmount();
+                if (amount > 0) {
+                    userLimit = Math.min(userLimit, amount);
+                }
             } else if (extra instanceof WiredExtraFilterUsersByVariable) {
                 variableFilters.add((WiredExtraFilterUsersByVariable) extra);
             }
@@ -187,6 +198,10 @@ final class WiredSelectionFilterSupport {
         }
 
         return result;
+    }
+
+    static void clearThreadLocalsForCurrentThread() {
+        FILTER_DEPTH.remove();
     }
 
     private static final class FilterScope implements AutoCloseable {

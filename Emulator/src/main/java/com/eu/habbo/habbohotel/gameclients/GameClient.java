@@ -5,44 +5,64 @@ import com.eu.habbo.crypto.HabboEncryption;
 import com.eu.habbo.habbohotel.LatencyTracker;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.messages.ServerMessage;
+import com.eu.habbo.messages.ServerMessageFrame;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.MessageComposer;
+import com.eu.habbo.monitoring.EmulatorNetworkStats;
+import com.eu.habbo.plugin.PluginManager;
 import com.eu.habbo.plugin.events.emulator.OutgoingPacketEvent;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import io.netty.util.ReferenceCountUtil;
 import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class GameClient {
+
+    // Client-advertised WIRED extension protocol version. This negotiates packet
+    // compatibility and is not a server-side feature flag.
+    public static final int WIRED_FEATURE_PROTOCOL_VERSION = 1;
+
+    // Bit 0 - the client understands per-furniture opacity updates.
+    public static final int WIRED_FEATURE_OPACITY = 1;
+    public static final int WIRED_FEATURE_MOVE_STYLE = 2;
+    private static final int WIRED_FEATURE_KNOWN_MASK = WIRED_FEATURE_OPACITY | WIRED_FEATURE_MOVE_STYLE;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GameClient.class);
 
     private final Channel channel;
     private final HabboEncryption encryption;
-	private final LatencyTracker latencyTracker;
+    private final LatencyTracker latencyTracker;
 
     private Habbo habbo;
     private final AtomicBoolean disposed = new AtomicBoolean(false);
     private boolean handshakeFinished;
     private String machineId = "";
     private String ssoTicket = "";
+    private String releaseVersion = "";
+
+    // These values are written during capability negotiation and read by packet
+    // and executor threads afterwards.
+    private volatile int wiredFeatureProtocolVersion;
+    private volatile int wiredFeatureCapabilities;
 
     public final ConcurrentHashMap<Integer, Integer> incomingPacketCounter = new ConcurrentHashMap<>(25);
     public final ConcurrentHashMap<Class<? extends MessageHandler>, Long> messageTimestamps = new ConcurrentHashMap<>();
+    public final ConcurrentHashMap<String, Long> groupedMessageRateLimitDeadlines = new ConcurrentHashMap<>();
     public long lastPacketCounterCleared = Emulator.getIntUnixTimestamp();
 
     public GameClient(Channel channel) {
         this.channel = channel;
         this.encryption = Emulator.getCrypto().isEnabled()
                 ? new HabboEncryption(
-                    Emulator.getCrypto().getExponent(),
-                    Emulator.getCrypto().getModulus(),
-                    Emulator.getCrypto().getPrivateExponent())
+                        Emulator.getCrypto().getExponent(),
+                        Emulator.getCrypto().getModulus(),
+                        Emulator.getCrypto().getPrivateExponent())
                 : null;
-			this.latencyTracker = new LatencyTracker();
+        this.latencyTracker = new LatencyTracker();
     }
 
     public Channel getChannel() {
@@ -52,10 +72,10 @@ public class GameClient {
     public HabboEncryption getEncryption() {
         return encryption;
     }
-	
-	public LatencyTracker getLatencyTracker() { 
-		return latencyTracker;
-	}
+
+    public LatencyTracker getLatencyTracker() {
+        return latencyTracker;
+    }
 
     public Habbo getHabbo() {
         return this.habbo;
@@ -63,6 +83,20 @@ public class GameClient {
 
     public void setHabbo(Habbo habbo) {
         this.habbo = habbo;
+    }
+
+    /** Stores only the WIRED capabilities understood by this emulator build. */
+    public void setWiredFeatureCapabilities(int protocolVersion, int capabilities) {
+        this.wiredFeatureProtocolVersion = Math.max(0, protocolVersion);
+        this.wiredFeatureCapabilities = Math.max(0, capabilities) & WIRED_FEATURE_KNOWN_MASK;
+    }
+
+    /** Returns whether this client advertised the required protocol and capability bit. */
+    public boolean supportsWiredFeature(int minimumProtocolVersion, int capability) {
+        return minimumProtocolVersion > 0
+                && capability > 0
+                && this.wiredFeatureProtocolVersion >= minimumProtocolVersion
+                && (this.wiredFeatureCapabilities & capability) == capability;
     }
 
     public boolean isHandshakeFinished() {
@@ -93,6 +127,14 @@ public class GameClient {
         this.ssoTicket = ssoTicket != null ? ssoTicket : "";
     }
 
+    public String getReleaseVersion() {
+        return this.releaseVersion;
+    }
+
+    public void setReleaseVersion(String releaseVersion) {
+        this.releaseVersion = releaseVersion != null ? releaseVersion : "";
+    }
+
     public void sendResponse(MessageComposer composer) {
         this.sendResponse(composer.compose());
     }
@@ -103,48 +145,84 @@ public class GameClient {
                 return;
             }
 
-            OutgoingPacketEvent event = new OutgoingPacketEvent(this.habbo, response.getComposer(), response);
-            Emulator.getPluginManager().fireEvent(event);
-
-            if (event.isCancelled()) {
+            PluginManager plugins = Emulator.getPluginManager();
+            boolean eventsRegistered = plugins.isRegistered(OutgoingPacketEvent.class, false);
+            response = this.applyOutgoingPacketEvent(response, plugins, eventsRegistered);
+            if (response == null) {
                 return;
             }
 
-            if (event.hasCustomMessage()) {
-                response = event.getCustomMessage();
-            }
-
-            this.channel.write(response, this.channel.voidPromise());
-            this.channel.flush();
+            this.writeResponse(response, !eventsRegistered, true);
+            this.flushResponseWrites();
         }
     }
 
     public void sendResponses(ArrayList<ServerMessage> responses) {
         if (this.channel.isOpen()) {
+            PluginManager plugins = Emulator.getPluginManager();
+            boolean eventsRegistered = plugins.isRegistered(OutgoingPacketEvent.class, false);
             for (ServerMessage response : responses) {
                 if (response == null || response.getHeader() <= 0) {
                     return;
                 }
 
-                OutgoingPacketEvent event = new OutgoingPacketEvent(this.habbo, response.getComposer(), response);
-                Emulator.getPluginManager().fireEvent(event);
-
-                if (event.isCancelled()) {
+                response = this.applyOutgoingPacketEvent(response, plugins, eventsRegistered);
+                if (response == null) {
                     continue;
                 }
 
-                if (event.hasCustomMessage()) {
-                    response = event.getCustomMessage();
-                }
-
-                this.channel.write(response);
+                this.writeResponse(response, !eventsRegistered, false);
             }
 
+            this.flushResponseWrites();
+        }
+    }
+
+    private ServerMessage applyOutgoingPacketEvent(
+            ServerMessage response, PluginManager plugins, boolean eventsRegistered) {
+        if (!eventsRegistered) {
+            return response;
+        }
+
+        OutgoingPacketEvent event = new OutgoingPacketEvent(this.habbo, response.getComposer(), response);
+        plugins.fireEvent(event);
+        if (event.isCancelled()) {
+            return null;
+        }
+        return event.hasCustomMessage() ? event.getCustomMessage() : response;
+    }
+
+    private void writeResponse(ServerMessage response, boolean sharedBroadcastAllowed, boolean useVoidPromise) {
+        if (!sharedBroadcastAllowed || !ServerMessageFrame.isBroadcastPrepared(response)) {
+            if (useVoidPromise) {
+                this.channel.write(response, this.channel.voidPromise());
+            } else {
+                this.channel.write(response);
+            }
+            return;
+        }
+
+        ByteBuf frame = ServerMessageFrame.retainedDuplicate(response);
+        try {
+            EmulatorNetworkStats.recordOutgoing(frame.readableBytes());
+            if (useVoidPromise) {
+                this.channel.write(frame, this.channel.voidPromise());
+            } else {
+                this.channel.write(frame);
+            }
+        } catch (RuntimeException | Error exception) {
+            ReferenceCountUtil.safeRelease(frame);
+            throw exception;
+        }
+    }
+
+    private void flushResponseWrites() {
+        if (!GameClientFlushBatch.deferFlush(this.channel)) {
             this.channel.flush();
         }
     }
-	
-	public void sendKeepAlive() {
+
+    public void sendKeepAlive() {
         if (this.channel != null && this.channel.isOpen()) {
             this.channel.writeAndFlush(new ServerMessage(-1));
         }
@@ -171,7 +249,8 @@ public class GameClient {
                 // appena ripristinata (era la causa del "Bye"/kick al 2° reconnect).
                 if (this.habbo.getClient() == this && this.habbo.isOnline()) {
                     // Try to park the habbo in the grace period instead of immediate disconnect
-                    boolean parked = allowSessionResume && SessionResumeManager.getInstance().parkHabbo(this.habbo, this.ssoTicket);
+                    boolean parked = allowSessionResume
+                            && SessionResumeManager.getInstance().parkHabbo(this.habbo, this.ssoTicket);
 
                     if (!parked) {
                         // No grace period configured — immediate disconnect as before

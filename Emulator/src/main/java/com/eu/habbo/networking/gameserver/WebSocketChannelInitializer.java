@@ -1,21 +1,33 @@
 package com.eu.habbo.networking.gameserver;
 
 import com.eu.habbo.Emulator;
+import com.eu.habbo.core.ConfigurationManager;
 import com.eu.habbo.messages.PacketManager;
 import com.eu.habbo.networking.gameserver.auth.AuthHttpHandler;
 import com.eu.habbo.networking.gameserver.auth.NitroSecureApiHandler;
 import com.eu.habbo.networking.gameserver.auth.NitroSecureAssetHandler;
-import com.eu.habbo.networking.gameserver.badges.BadgeLeaderboardHttpHandler;
 import com.eu.habbo.networking.gameserver.badges.BadgeHttpHandler;
+import com.eu.habbo.networking.gameserver.badges.BadgeLeaderboardHttpHandler;
+import com.eu.habbo.networking.gameserver.cms.CmsApiHandler;
 import com.eu.habbo.networking.gameserver.codec.WebSocketCodec;
 import com.eu.habbo.networking.gameserver.crypto.WsHandshakeHandler;
-import com.eu.habbo.networking.gameserver.decoders.*;
+import com.eu.habbo.networking.gameserver.decoders.GameByteDecoder;
+import com.eu.habbo.networking.gameserver.decoders.GameByteFrameDecoder;
+import com.eu.habbo.networking.gameserver.decoders.GameClientMessageLogger;
+import com.eu.habbo.networking.gameserver.decoders.GameMessageHandler;
+import com.eu.habbo.networking.gameserver.decoders.GameMessageRateLimit;
+import com.eu.habbo.networking.gameserver.decoders.GamePolicyDecoder;
+import com.eu.habbo.networking.gameserver.decoders.PacketDispatchLatencyHandler;
+import com.eu.habbo.networking.gameserver.decoders.PacketDispatchMarker;
 import com.eu.habbo.networking.gameserver.encoders.GameServerMessageEncoder;
 import com.eu.habbo.networking.gameserver.encoders.GameServerMessageLogger;
 import com.eu.habbo.networking.gameserver.handlers.IdleTimeoutHandler;
+import com.eu.habbo.networking.gameserver.handlers.SustainedUnwritableHandler;
+import com.eu.habbo.networking.gameserver.handlers.WebSocketHttpCleanupHandler;
 import com.eu.habbo.networking.gameserver.handlers.WebSocketHttpHandler;
-import com.eu.habbo.networking.gameserver.stats.EmuStatsHttpHandler;
 import com.eu.habbo.networking.gameserver.ssl.SSLCertificateLoader;
+import com.eu.habbo.networking.gameserver.stats.EmuStatsHttpHandler;
+import com.eu.habbo.networking.gameserver.wired.WiredVariableApiHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
@@ -26,42 +38,36 @@ import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
-import io.netty.util.concurrent.DefaultEventExecutorGroup;
-import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.concurrent.EventExecutorGroup;
-
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SSLEngine;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class WebSocketChannelInitializer extends ChannelInitializer<SocketChannel> {
+    private static final Logger LOGGER = LoggerFactory.getLogger(WebSocketChannelInitializer.class);
     private static final int MAX_FRAME_SIZE = 500000;
-
-    // Runs the game packet handler OFF the Netty I/O event loop, so a blocking
-    // handler (login/friends/catalog/guild JDBC, A* pathfinding, etc.) can no
-    // longer stall socket I/O for every other client sharing that I/O thread.
-    // A DefaultEventExecutorGroup pins each channel to one executor, so a single
-    // client's packets stay strictly ordered (no new intra-client races); the
-    // cross-client concurrency degree is the same the multi-threaded I/O group
-    // already had. Daemon threads so they don't block JVM shutdown.
-    private static final EventExecutorGroup PACKET_HANDLER_GROUP = new DefaultEventExecutorGroup(
-            packetHandlerThreads(),
-            new DefaultThreadFactory("GamePacketHandler", true));
-
-    // Size of the packet-handler pool. Defaults to max(16, 2x CPU cores); set
-    // the optional `io.packet.handler.threads` config key to override.
-    private static int packetHandlerThreads() {
-        int fallback = Math.max(16, Runtime.getRuntime().availableProcessors() * 2);
-        if (Emulator.getConfig() == null) {
-            return fallback;
-        }
-        int configured = Emulator.getConfig().getInt("io.packet.handler.threads", fallback);
-        return configured > 0 ? configured : fallback;
-    }
 
     private final SslContext sslContext;
     private final boolean sslEnabled;
     private final WebSocketServerProtocolConfig wsConfig;
+    private final int unwritableTimeoutSeconds;
+    private final int blockingHttpThreads;
 
     public WebSocketChannelInitializer() {
+        this(10, 8);
+    }
+
+    WebSocketChannelInitializer(int unwritableTimeoutSeconds) {
+        this(unwritableTimeoutSeconds, 8);
+    }
+
+    WebSocketChannelInitializer(int unwritableTimeoutSeconds, int blockingHttpThreads) {
+        if (unwritableTimeoutSeconds <= 0) {
+            throw new IllegalArgumentException("unwritableTimeoutSeconds must be positive");
+        }
+        this.unwritableTimeoutSeconds = unwritableTimeoutSeconds;
+        this.blockingHttpThreads = blockingHttpThreads;
         this.sslContext = SSLCertificateLoader.getContext();
         this.sslEnabled = this.sslContext != null;
         this.wsConfig = WebSocketServerProtocolConfig.newBuilder()
@@ -74,6 +80,10 @@ public class WebSocketChannelInitializer extends ChannelInitializer<SocketChanne
     @Override
     protected void initChannel(SocketChannel ch) {
         ch.pipeline().addLast("logger", new LoggingHandler());
+        ch.pipeline()
+                .addLast(
+                        "outboundBackpressure",
+                        new SustainedUnwritableHandler(this.unwritableTimeoutSeconds, TimeUnit.SECONDS));
 
         if (this.sslEnabled) {
             SSLEngine engine = this.sslContext.newEngine(ch.alloc());
@@ -83,17 +93,43 @@ public class WebSocketChannelInitializer extends ChannelInitializer<SocketChanne
         ch.pipeline().addLast("httpCodec", new HttpServerCodec());
         ch.pipeline().addLast("httpAggregator", new HttpObjectAggregator(MAX_FRAME_SIZE));
         ch.pipeline().addLast("wsHttpHandler", new WebSocketHttpHandler());
-        ch.pipeline().addLast("nitroSecureAssetHandler", new NitroSecureAssetHandler());
+        ConfigurationManager configuration = Emulator.getConfig();
+        ExecutionBackpressureSettings backpressureSettings = configuration == null
+                ? ExecutionBackpressureSettings.defaults()
+                : ExecutionBackpressureSettings.from(configuration);
+        EventExecutorGroup blockingHttp =
+                BlockingHttpExecutionGroup.get(this.blockingHttpThreads, backpressureSettings);
+        ch.pipeline()
+                .addLast(
+                        "blockingHttpAdmissionAssets",
+                        BlockingHttpExecutionGroup.admissionHandler("nitroSecureAssetHandler"));
+        ch.pipeline().addLast(blockingHttp, "nitroSecureAssetHandler", new NitroSecureAssetHandler());
         ch.pipeline().addLast("nitroSecureApiHandler", new NitroSecureApiHandler());
         ch.pipeline().addLast("authHttpHandler", new AuthHttpHandler());
-        ch.pipeline().addLast("badgeHttpHandler", new BadgeHttpHandler());
-        ch.pipeline().addLast("badgeLeaderboardHttpHandler", new BadgeLeaderboardHttpHandler());
-        ch.pipeline().addLast("emuStatsHttpHandler", new EmuStatsHttpHandler());
+        ch.pipeline().addLast("blockingHttpAdmissionCms", BlockingHttpExecutionGroup.admissionHandler("cmsApiHandler"));
+        ch.pipeline().addLast(blockingHttp, "cmsApiHandler", new CmsApiHandler());
+        ch.pipeline()
+                .addLast("blockingHttpAdmissionWired", BlockingHttpExecutionGroup.admissionHandler("wiredApiHandler"));
+        ch.pipeline().addLast(blockingHttp, "wiredApiHandler", new WiredVariableApiHandler());
+        ch.pipeline()
+                .addLast("blockingHttpAdmissionBadge", BlockingHttpExecutionGroup.admissionHandler("badgeHttpHandler"));
+        ch.pipeline().addLast(blockingHttp, "badgeHttpHandler", new BadgeHttpHandler());
+        ch.pipeline()
+                .addLast(
+                        "blockingHttpAdmissionBadgeLeaderboard",
+                        BlockingHttpExecutionGroup.admissionHandler("badgeLeaderboardHttpHandler"));
+        ch.pipeline().addLast(blockingHttp, "badgeLeaderboardHttpHandler", new BadgeLeaderboardHttpHandler());
+        ch.pipeline()
+                .addLast(
+                        "blockingHttpAdmissionStats",
+                        BlockingHttpExecutionGroup.admissionHandler("emuStatsHttpHandler"));
+        ch.pipeline().addLast(blockingHttp, "emuStatsHttpHandler", new EmuStatsHttpHandler());
         ch.pipeline().addLast("wsProtocolHandler", new WebSocketServerProtocolHandler(this.wsConfig));
+        ch.pipeline().addLast("wsHttpCleanup", new WebSocketHttpCleanupHandler());
         ch.pipeline().addLast("wsFrameAggregator", new WebSocketFrameAggregator(MAX_FRAME_SIZE));
         ch.pipeline().addLast("wsCodec", new WebSocketCodec());
 
-        if (Emulator.getConfig().getBoolean("crypto.ws.enabled", false)) {
+        if (configuration != null && configuration.getBoolean("crypto.ws.enabled", false)) {
             ch.pipeline().addLast(WsHandshakeHandler.HANDLER_NAME, new WsHandshakeHandler());
         }
 
@@ -107,7 +143,13 @@ public class WebSocketChannelInitializer extends ChannelInitializer<SocketChanne
 
         ch.pipeline().addLast("idleEventHandler", new IdleTimeoutHandler(30, 60));
         ch.pipeline().addLast(new GameMessageRateLimit());
-        ch.pipeline().addLast(PACKET_HANDLER_GROUP, "gameMessageHandler", new GameMessageHandler());
+        ch.pipeline().addLast("packetDispatchMarker", new PacketDispatchMarker());
+        ch.pipeline()
+                .addLast(
+                        "packetExecutionAdmission", GamePacketExecutionGroup.admissionHandler("packetDispatchLatency"));
+        ch.pipeline()
+                .addLast(GamePacketExecutionGroup.get(), "packetDispatchLatency", new PacketDispatchLatencyHandler());
+        ch.pipeline().addLast(GamePacketExecutionGroup.get(), "gameMessageHandler", new GameMessageHandler());
         ch.pipeline().addLast("messageEncoder", new GameServerMessageEncoder());
 
         if (PacketManager.DEBUG_SHOW_PACKETS) {

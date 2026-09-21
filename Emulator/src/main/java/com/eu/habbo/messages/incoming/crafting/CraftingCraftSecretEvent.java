@@ -5,6 +5,7 @@ import com.eu.habbo.habbohotel.achievements.AchievementManager;
 import com.eu.habbo.habbohotel.crafting.CraftingAltar;
 import com.eu.habbo.habbohotel.crafting.CraftingRecipe;
 import com.eu.habbo.habbohotel.items.Item;
+import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.catalog.AlertLimitedSoldOutComposer;
@@ -13,11 +14,11 @@ import com.eu.habbo.messages.outgoing.inventory.AddHabboItemComposer;
 import com.eu.habbo.messages.outgoing.inventory.InventoryRefreshComposer;
 import com.eu.habbo.messages.outgoing.inventory.RemoveHabboItemComposer;
 import com.eu.habbo.threading.runnables.QueryDeleteHabboItem;
-
-import java.util.HashMap;
+import com.eu.habbo.util.PacketGuard;
 import java.util.Collections;
-import java.util.Map;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Set;
 
 public class CraftingCraftSecretEvent extends MessageHandler {
@@ -28,15 +29,23 @@ public class CraftingCraftSecretEvent extends MessageHandler {
         int altarId = this.packet.readInt();
         int count = this.packet.readInt();
 
-        if (count <= 0 || count > MAX_SECRET_CRAFT_INGREDIENTS) {
+        if (count <= 0
+                || !PacketGuard.isValidIntList(count, this.packet.bytesAvailable(), MAX_SECRET_CRAFT_INGREDIENTS)) {
             this.client.sendResponse(new CraftingResultComposer(null));
             return;
         }
 
-        HabboItem craftingAltar = this.client.getHabbo().getHabboInfo().getCurrentRoom().getHabboItem(altarId);
+        Room room = this.client.getHabbo().getHabboInfo().getCurrentRoom();
+        if (room == null) {
+            this.client.sendResponse(new CraftingResultComposer(null));
+            return;
+        }
+
+        HabboItem craftingAltar = room.getHabboItem(altarId);
 
         if (craftingAltar != null) {
-            CraftingAltar altar = Emulator.getGameEnvironment().getCraftingManager().getAltar(craftingAltar.getBaseItem());
+            CraftingAltar altar =
+                    Emulator.getGameEnvironment().getCraftingManager().getAltar(craftingAltar.getBaseItem());
 
             if (altar != null) {
                 Set<HabboItem> habboItems = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -44,7 +53,11 @@ public class CraftingCraftSecretEvent extends MessageHandler {
 
                 for (int i = 0; i < count; i++) {
                     int itemId = this.packet.readInt();
-                    HabboItem habboItem = this.client.getHabbo().getInventory().getItemsComponent().getHabboItem(itemId);
+                    HabboItem habboItem = this.client
+                            .getHabbo()
+                            .getInventory()
+                            .getItemsComponent()
+                            .getHabboItem(itemId);
 
                     if (habboItem == null || !habboItems.add(habboItem)) {
                         this.client.sendResponse(new CraftingResultComposer(null));
@@ -66,7 +79,9 @@ public class CraftingCraftSecretEvent extends MessageHandler {
                         return;
                     }
 
-                    HabboItem rewardItem = Emulator.getGameEnvironment().getItemManager().createItem(this.client.getHabbo().getHabboInfo().getId(), recipe.getReward(), 0, 0, "");
+                    HabboItem rewardItem = Emulator.getGameEnvironment()
+                            .getItemManager()
+                            .createItem(this.client.getHabbo().getHabboInfo().getId(), recipe.getReward(), 0, 0, "");
 
                     if (rewardItem != null) {
                         if (recipe.isLimited()) {
@@ -74,20 +89,36 @@ public class CraftingCraftSecretEvent extends MessageHandler {
                         }
 
                         if (!recipe.getAchievement().isEmpty()) {
-                            AchievementManager.progressAchievement(this.client.getHabbo(), Emulator.getGameEnvironment().getAchievementManager().getAchievement(recipe.getAchievement()));
+                            AchievementManager.progressAchievement(
+                                    this.client.getHabbo(),
+                                    Emulator.getGameEnvironment()
+                                            .getAchievementManager()
+                                            .getAchievement(recipe.getAchievement()));
                         }
 
                         this.client.sendResponse(new CraftingResultComposer(recipe));
                         if (!this.client.getHabbo().getHabboStats().hasRecipe(recipe.getId())) {
                             this.client.getHabbo().getHabboStats().addRecipe(recipe.getId());
-                            AchievementManager.progressAchievement(this.client.getHabbo(), Emulator.getGameEnvironment().getAchievementManager().getAchievement("AtcgSecret"));
+                            AchievementManager.progressAchievement(
+                                    this.client.getHabbo(),
+                                    Emulator.getGameEnvironment()
+                                            .getAchievementManager()
+                                            .getAchievement("AtcgSecret"));
                         }
-                        this.client.getHabbo().getInventory().getItemsComponent().addItem(rewardItem);
+                        this.client
+                                .getHabbo()
+                                .getInventory()
+                                .getItemsComponent()
+                                .addItem(rewardItem);
                         this.client.sendResponse(new AddHabboItemComposer(rewardItem));
                         for (HabboItem item : habboItems) {
-                            this.client.getHabbo().getInventory().getItemsComponent().removeHabboItem(item);
+                            this.client
+                                    .getHabbo()
+                                    .getInventory()
+                                    .getItemsComponent()
+                                    .removeHabboItem(item);
                             this.client.sendResponse(new RemoveHabboItemComposer(item.getGiftAdjustedId()));
-                            Emulator.getThreading().run(new QueryDeleteHabboItem(item.getId()));
+                            Emulator.getThreading().runPersistence(new QueryDeleteHabboItem(item.getId()));
                         }
                         this.client.sendResponse(new InventoryRefreshComposer());
 

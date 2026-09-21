@@ -1,7 +1,7 @@
 package com.eu.habbo.database;
 
-import com.eu.habbo.Emulator;
 import com.eu.habbo.core.ConfigurationManager;
+import com.eu.habbo.database.compat.LegacySqlBridge;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,27 +19,28 @@ public class Database {
 
     private HikariDataSource dataSource;
     private DatabasePool databasePool;
+    private final LegacySqlBridge legacySqlBridge = new LegacySqlBridge();
+
+    /** Wraps a caller-provided datasource for integration tests. */
+    Database(HikariDataSource dataSource) {
+        this.dataSource = dataSource;
+    }
 
     public Database(ConfigurationManager config) {
         long millis = System.currentTimeMillis();
 
-        boolean SQLException = false;
-
         try {
             this.databasePool = new DatabasePool();
-            if (!this.databasePool.getStoragePooling(config)) {
-                LOGGER.info("Failed to connect to the database. Please check config.ini and make sure the MySQL process is running. Shutting down...");
-                SQLException = true;
-                return;
+            if (!this.databasePool.getStoragePooling(config, this.legacySqlBridge)) {
+                throw new IllegalStateException(
+                        "Failed to initialize the database pool; check config.ini and MariaDB availability");
             }
             this.dataSource = this.databasePool.getDatabase();
         } catch (Exception e) {
-            SQLException = true;
+            this.dispose();
             LOGGER.error("Failed to connect to your database.", e);
-        } finally {
-            if (SQLException) {
-                Emulator.prepareShutdown();
-            }
+            if (e instanceof RuntimeException runtimeException) throw runtimeException;
+            throw new IllegalStateException("Database startup failed", e);
         }
 
         LOGGER.info("Database -> Connected! ({} MS)", System.currentTimeMillis() - millis);
@@ -53,6 +54,10 @@ public class Database {
 
     public HikariDataSource getDataSource() {
         return this.dataSource;
+    }
+
+    public LegacySqlBridge getLegacySqlBridge() {
+        return this.legacySqlBridge;
     }
 
     public DatabasePool getDatabasePool() {

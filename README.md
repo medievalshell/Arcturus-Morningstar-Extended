@@ -1,107 +1,101 @@
-# Arcturus Morningstar Extended #
+# Polaris
 
-Arcturus Morningstar Extended is as a fork of Arcturus Emulator by TheGeneral and modified by Krews. Arcturus Morningstar Extended is also released under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.txt) 
-and is developed for free by talented developers and is compatible with the following client revision/community projects:
+Polaris is a fork of [Arcturus Community](https://git.krews.org/morningstar/Arcturus-Community) and is completely independently developed and has no ties to Krews / Team Morningstar
 
-| Community Clients | [Nitro Client](https://github.com/billsonnn/nitro-react) |
-| ------------- | ------------- |
+**Polaris** is a complete, self-contained hotel package: a modern Java game
+server (formerly known as *Arcturus Morningstar Extended*), the Octane browser
+client, a ready-to-import database and all the assets needed to bring a hotel
+online.
 
-## Download ##
-[Latest compiled version](https://github.com/duckietm/Arcturus-Morningstar-Extended/tree/main/Latest_Compiled_Version)
+> ### 📢 Disclaimer
+> This repository is provided as an educational resource for learning purposes
+> only. The creators and contributors are not responsible for any misuse or
+> unintended consequences arising from its use. By using these files you agree
+> to take full responsibility for your actions and to comply with all
+> applicable laws and regulations.
 
-## Connection ##
-Use the BUILD-IN Websocket so do NOT load any websocket plugin!
+## Requirements
 
-### How do I connect to my emulator using Secure Websockets (wss)?
-You have several options to add WSS support to your websocket server. 
+- **Emulator:** Java 21 (JDK) and Maven
+- **Database:** MariaDB
 
-- You can add your certificate and key file to the path `/ssl/cert.pem` and `/ssl/privkey.pem` to add WSS support directly to the server **Note**:The client will not accept self-signed certificates, you must use a certificate signed by a CA (you can get one for free from letsencrypt.org)
-  
-- **RECOMMENDED** You can proxy WSS with either cloudflare or nginx. **Note**: Adding a proxy means that you will have to configure `ws.nitro.ip.header` so that the plugin is able to get the player's real ip address, and not the IP address of the proxy.
+## Quick start
 
-### Proxying WSS with Cloudflare
-You can easily proxy wss traffic using Cloudflare. However, you should first make sure that your `ws.nitro.port` is set to one that is listed as HTTPS Cloudflare Compatible in the following link:
-https://support.cloudflare.com/hc/en-us/articles/200169156-Which-ports-will-Cloudflare-work-with-
+### 1. Database
 
-As of writing this, the following ports are listed as compatible:
-- 443
-- 2053
-- 2083
-- 2087
-- 2096
-- 8443
+Create an empty MariaDB database and put its name and credentials in
+`config.ini`. Polaris creates the schema automatically on first startup; you do
+not need to import a database dump.
 
-After your port is set to one that is compatible, create a new A record for a subdomain that will be used for websocket connections, and make sure that it is set to be proxied by Cloudflare (the cloud should be orange if it is being proxied). It should be pointing to your emulator IP.
+Already running an Arcturus Morningstar 3.5.5 or older Polaris hotel? **Make a
+full database backup first**, point Polaris at that database, and start the
+emulator. A recognized hotel is adopted and upgraded automatically while its
+users, rooms, items, currencies, settings, and custom tables are preserved.
+Polaris refuses to modify a non-empty database that does not look like an
+Arcturus/Polaris hotel.
 
-Finally, create a new page rule under the Page Rules tab in Cloudflare and disable SSL for the subdomain you created above. You will now be able to connect using secure websockets using the following example url, where I created an A record for the subdomain `ws` and I set my `ws.nitro.port` to 2096: `wss://ws.example.com:2096` 
+Automatic migrations are enabled by default. Advanced deployments can set
+`db.migrate.on_startup=false` (or `DB_MIGRATE_ON_STARTUP=false`) after applying
+migrations separately.
 
-### Branches ###
-There are two main branches in use on the Arcturus Morningstar git. Below the pros an
+Deployment and troubleshooting commands:
 
-| master | Tested on a production hotel and is stable for every day use with no known serious exploits. |
-| ------------- | ------------- |
-| dev | The most up-to-date, but features may not work as intended. Use at your own risk. |
+```bash
+# Apply migrations and exit without starting the hotel
+java -jar Polaris-<version>-jar-with-dependencies.jar --migrations-only
 
-There is no set timeframe on when new versions will be released or when the stable branch will be updated
+# Read-only compatibility, checksum and pending-migration report
+java -jar Polaris-<version>-jar-with-dependencies.jar --migrations=validate
+```
 
-### Database ###
-We have placed the myBoBBa database [myBobba](https://github.com/ObjectRetros/2023-hotel-files) to get you started on building your Retro hotel.
-Also there is a file call UpdateDatabase.sql this will hold all the updates that are required, please run this after the myBoBBa Database import
+`--migrations=apply` explicitly applies migrations before normal startup. There
+is no interactive startup prompt, because that would hang Docker, systemd and
+hosting-panel restarts.
 
-## Can I Help!? ##
-#### Reporting Bugs: ####
-You can report problems via the [Issue Tracker](https://github.com/duckietm/Arcturus-Morningstar-Extended/issues*
+### 2. Game server
 
-###### * When making an bug report or a feature request use the template we provide so that it can be categorized correctly and we have more information to replicate a bug or implement a feature correctly. ######
-#### Can I contribute code to this project? ####
-Of Course! if you have fixed a bug from the git please feel free to do a [merge request](https://github.com/duckietm/Arcturus-Morningstar-Extended/issues)*
+```
+cd emulator
+mvn package
+```
 
-## Support 
-We also have a [Discord channel](https://discord.gg/3VeyZXf5) where you can find some more information.
+The build produces `target/Polaris-<version>-jar-with-dependencies.jar`.
+Place a `config.ini` with your database credentials next to the jar (or set
+the `DB_HOSTNAME`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME` and `DB_PASSWORD`
+environment variables) and start it with:
 
-###### * Anyone is allowed to fork the project and make pull requests, we make no guarantee that pull requests will be approved into the project. Please Do NOT push code which does not replicate behaviour on habbo.com, instead make the behaviour configurable or as a plugin. ######
+```
+java -jar Polaris-<version>-jar-with-dependencies.jar
+```
 
-## Plugin System ##
-The robust Plugin System included in the original Arcturus release is also included in Arcturus Morningstar, if you're interested in making your own plugins, feel free to ask around on our discord and we'll point you in the right direction! 
+## Plugins & backwards compatibility
 
-### Credits ###
-    
-       - TheGeneral (Arcturus Emulator)
-	   - Beny
-	   - Alejandro
-	   - Capheus
-	   - Skeletor
-	   - Harmonic
-	   - Mike
-	   - Remco
-	   - zGrav
-	   - Quadral
-	   - Harmony
-	   - Swirny
-	   - ArpyAge
-	   - Mikkel
-	   - Rodolfo
-	   - Kitt Mustang
-	   - Snaiker
-	   - nttzx
-	   - necmi
-	   - Dome
-	   - Jose Flores
-	   - Cam
-	   - Oliver
-	   - Narzo
-	   - Tenshie
-	   - MartenM
-	   - Ridge
-	   - SenpaiDipper
-	   - Thijmen
-	   - Brenoepic
-	   - Stankman
-	   - Laynester
-	   - Bill
-	   - Mikee
-	   - Merijn
-	   - Puffin
-	   - ObjectRetros
-	   - EntenKoeniq
-	   - DuckieTM
+Polaris keeps its promise to existing plugin authors:
+
+- Plugin jars built for Arcturus/Morningstar **load unchanged** — the Java API
+  still lives in the `com.eu.habbo.*` packages.
+- Raw SQL written against pre-Polaris table names is translated on the fly by
+  the **legacy bridge**. The best-known example: the old `permissions` table
+  is now split into `permission_ranks` and `permission_definitions`, and the
+  bridge rewrites old-style statements (such as
+  `ALTER TABLE permissions ADD cmd_x ...`) into their new-schema equivalents
+  automatically.
+
+How it works, what it covers and how to configure it is documented in
+[`POLARIS.md`](POLARIS.md).
+
+## Credits
+
+- **TheGeneral** — the original Arcturus emulator
+- **The Arcturus Morningstar team** ([krews.org](https://krews.org)) — the community fork Polaris grew from
+- **DuckieTM**, **simoleo89**, **Medievalshell**, **Lorenzo (the wired master)**, **Remco**, **Dennis (DennisObject)**
+- **Dippy** — Improved wired architecture base
+- **Seth / iSetht** — Opacity & Gravity wireds
+- **Puffin** — the MyBoBBa catalogue assets, **xlRaiko** — the clothing pack
+- **bop** — Easter egg exploit & Nitro Memory Leaks
+
+## Community
+
+[![Discord](https://img.shields.io/badge/Discord-Join%20our%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/jqZfVrhbf)
+
+Need help, want to contribute, or just want to chat?

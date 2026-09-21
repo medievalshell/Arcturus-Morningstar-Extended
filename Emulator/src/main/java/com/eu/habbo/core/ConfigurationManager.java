@@ -1,27 +1,37 @@
 package com.eu.habbo.core;
 
 import com.eu.habbo.Emulator;
+import com.eu.habbo.core.config.ConfigRegistry;
 import com.eu.habbo.plugin.events.emulator.EmulatorConfigUpdatedEvent;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ConfigurationManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConfigurationManager.class);
     private static final String EMULATOR_SETTINGS_TABLE = "emulator_settings";
     private static final String WIRED_SETTINGS_TABLE = "wired_emulator_settings";
+    private static final Set<String> STARTUP_OWNED_KEYS =
+            Set.of("runtime.operational.profile", "persistence.executor.threads");
 
     private final Properties properties;
     private final Properties wiredProperties;
+    private final Set<String> dirtyKeys = ConcurrentHashMap.newKeySet();
     private final String configurationPath;
     public boolean loaded = false;
     public boolean isLoading = false;
@@ -37,6 +47,7 @@ public class ConfigurationManager {
         this.isLoading = true;
         this.properties.clear();
         this.wiredProperties.clear();
+        this.dirtyKeys.clear();
 
         InputStream input = null;
 
@@ -44,8 +55,7 @@ public class ConfigurationManager {
 
         boolean useEnvVarsForDbConnection = false;
 
-        if(envDbHostname != null)
-        {
+        if (envDbHostname != null) {
             useEnvVarsForDbConnection = envDbHostname.length() > 1;
         }
 
@@ -78,6 +88,7 @@ public class ConfigurationManager {
             envMapping.put("db.username", "DB_USERNAME");
             envMapping.put("db.password", "DB_PASSWORD");
             envMapping.put("db.params", "DB_PARAMS");
+            envMapping.put("db.migrate.on_startup", "DB_MIGRATE_ON_STARTUP");
 
             // Game Configuration
             envMapping.put("game.host", "EMU_HOST");
@@ -90,6 +101,8 @@ public class ConfigurationManager {
 
             // Runtime
             envMapping.put("runtime.threads", "RT_THREADS");
+            envMapping.put("runtime.operational.profile", "RUNTIME_OPERATIONAL_PROFILE");
+            envMapping.put("persistence.executor.threads", "PERSISTENCE_EXECUTOR_THREADS");
             envMapping.put("logging.errors.runtime", "RT_LOG_ERRORS");
             envMapping.put("hotel.timezone", "HOTEL_TIMEZONE");
 
@@ -109,6 +122,13 @@ public class ConfigurationManager {
         }
 
         this.isLoading = false;
+        for (ConfigRegistry.ValidationIssue issue : ConfigRegistry.standard().validate(this)) {
+            LOGGER.error(
+                    "Invalid first-party configuration key {} with value '{}': {}",
+                    issue.key(),
+                    issue.value(),
+                    issue.reason());
+        }
         LOGGER.info("Configuration Manager -> Loaded!");
 
         if (Emulator.getPluginManager() != null) {
@@ -126,36 +146,44 @@ public class ConfigurationManager {
         LOGGER.info("Configuration -> loaded! ({} MS)", System.currentTimeMillis() - millis);
     }
 
-    public void saveToDatabase() {
-        this.saveSettingsTable(EMULATOR_SETTINGS_TABLE, this.properties);
-        this.saveSettingsTable(WIRED_SETTINGS_TABLE, this.wiredProperties);
+    public synchronized void saveToDatabase() {
+        this.saveSettingsTable(EMULATOR_SETTINGS_TABLE, this.properties, false);
+        this.saveSettingsTable(WIRED_SETTINGS_TABLE, this.wiredProperties, true);
     }
-
 
     public String getValue(String key) {
-        return this.getValue(key, "");
+        return this.getValue(key, "", true);
     }
 
-
     public String getValue(String key, String defaultValue) {
-        if (this.isLoading)
-            return defaultValue;
+        return this.getValue(key, defaultValue, false);
+    }
+
+    private String getValue(String key, String defaultValue, boolean logMissing) {
+        if (this.isLoading) return defaultValue;
+
+        String value = this.getValueIfPresent(key);
+        if (value != null) return value;
+
+        if (logMissing) {
+            LOGGER.error("Config key not found {}", key);
+        }
+        return defaultValue;
+    }
+
+    public String getValueIfPresent(String key) {
+        if (this.isLoading) return null;
 
         Properties targetProperties = this.resolveProperties(key);
-
         if (targetProperties.containsKey(key)) {
-            return targetProperties.getProperty(key, defaultValue);
+            return targetProperties.getProperty(key);
         }
 
         if (this.isWiredSettingKey(key) && this.properties.containsKey(key)) {
-            return this.properties.getProperty(key, defaultValue);
+            return this.properties.getProperty(key);
         }
 
-        if (!targetProperties.containsKey(key)) {
-            LOGGER.error("Config key not found {}", key);
-        }
-
-        return defaultValue;
+        return null;
     }
 
     public boolean getBoolean(String key) {
@@ -163,15 +191,18 @@ public class ConfigurationManager {
     }
 
     public boolean getBoolean(String key, boolean defaultValue) {
-        if (this.isLoading)
-            return defaultValue;
+        if (this.isLoading) return defaultValue;
 
-        try {
-            return (this.getValue(key, "0").equals("1")) || (this.getValue(key, "false").equals("true"));
-        } catch (Exception e) {
-            LOGGER.error("Failed to parse key {} with value '{}' to type boolean.", key, this.getValue(key));
-        }
-        return defaultValue;
+        String value = this.getValueIfPresent(key);
+        if (value == null) return defaultValue;
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "1", "true" -> true;
+            case "0", "false" -> false;
+            default -> {
+                LOGGER.error("Failed to parse key {} with value '{}' to type boolean.", key, value);
+                yield defaultValue;
+            }
+        };
     }
 
     public int getInt(String key) {
@@ -179,8 +210,7 @@ public class ConfigurationManager {
     }
 
     public int getInt(String key, Integer defaultValue) {
-        if (this.isLoading)
-            return defaultValue;
+        if (this.isLoading) return defaultValue;
 
         try {
             return Integer.parseInt(this.getValue(key, defaultValue.toString()));
@@ -195,8 +225,7 @@ public class ConfigurationManager {
     }
 
     public double getDouble(String key, Double defaultValue) {
-        if (this.isLoading)
-            return defaultValue;
+        if (this.isLoading) return defaultValue;
 
         try {
             return Double.parseDouble(this.getValue(key, defaultValue.toString()));
@@ -207,8 +236,9 @@ public class ConfigurationManager {
         return defaultValue;
     }
 
-    public void update(String key, String value) {
+    public synchronized void update(String key, String value) {
         this.resolveProperties(key).setProperty(key, value);
+        this.dirtyKeys.add(key);
     }
 
     public void register(String key, String value) {
@@ -218,8 +248,7 @@ public class ConfigurationManager {
     public void register(String key, String value, String comment) {
         Properties targetProperties = this.resolveProperties(key);
 
-        if (targetProperties.getProperty(key, null) != null)
-            return;
+        if (targetProperties.getProperty(key, null) != null) return;
 
         this.insertSetting(key, value, comment);
         this.update(key, value);
@@ -227,11 +256,14 @@ public class ConfigurationManager {
 
     private void loadSettingsTable(String tableName, Properties targetProperties, boolean optional) {
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             Statement statement = connection.createStatement()) {
+                Statement statement = connection.createStatement()) {
             if (statement.execute("SELECT * FROM " + tableName)) {
                 try (ResultSet set = statement.getResultSet()) {
                     while (set.next()) {
-                        targetProperties.put(set.getString("key"), set.getString("value"));
+                        String key = set.getString("key");
+                        if (!STARTUP_OWNED_KEYS.contains(key)) {
+                            targetProperties.put(key, set.getString("value"));
+                        }
                     }
                 }
             }
@@ -244,15 +276,26 @@ public class ConfigurationManager {
         }
     }
 
-    private void saveSettingsTable(String tableName, Properties sourceProperties) {
+    private void saveSettingsTable(String tableName, Properties sourceProperties, boolean wired) {
+        Map<String, String> changes = new HashMap<>();
+        for (String key : this.dirtyKeys) {
+            if (this.isWiredSettingKey(key) == wired && sourceProperties.containsKey(key)) {
+                changes.put(key, sourceProperties.getProperty(key));
+            }
+        }
+        if (changes.isEmpty()) {
+            return;
+        }
+
         String sql = "UPDATE " + tableName + " SET `value` = ? WHERE `key` = ? LIMIT 1";
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            for (Map.Entry<Object, Object> entry : sourceProperties.entrySet()) {
-                statement.setString(1, entry.getValue().toString());
-                statement.setString(2, entry.getKey().toString());
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (Map.Entry<String, String> entry : changes.entrySet()) {
+                statement.setString(1, entry.getValue());
+                statement.setString(2, entry.getKey());
                 statement.executeUpdate();
+                this.dirtyKeys.remove(entry.getKey());
             }
         } catch (SQLException e) {
             if (WIRED_SETTINGS_TABLE.equals(tableName)) {
@@ -270,7 +313,7 @@ public class ConfigurationManager {
                 : "INSERT INTO " + tableName + " (`key`, `value`) VALUES (?, ?)";
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+                PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, key);
             statement.setString(2, value);
 

@@ -1,13 +1,14 @@
 package com.eu.habbo.messages.incoming.catalog.catalogadmin;
 
-import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.catalog.CatalogPageType;
+import com.eu.habbo.habbohotel.catalog.versioning.CatalogChangeOperation;
+import com.eu.habbo.habbohotel.catalog.versioning.CatalogSnapshotPatch;
 import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.messages.incoming.MessageHandler;
+import com.eu.habbo.messages.incoming.catalog.catalogadmin.studio.CatalogStudioMutationEnvelope;
+import com.eu.habbo.messages.incoming.catalog.catalogadmin.studio.CatalogStudioRequestParser;
+import com.eu.habbo.messages.incoming.catalog.catalogadmin.studio.CatalogStudioRuntime;
 import com.eu.habbo.messages.outgoing.catalog.catalogadmin.CatalogAdminResultComposer;
-
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 
 public class CatalogAdminMoveOfferEvent extends MessageHandler {
 
@@ -29,16 +30,20 @@ public class CatalogAdminMoveOfferEvent extends MessageHandler {
 
         if (orderNumber < 0) orderNumber = 0;
 
-        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement((pageType == CatalogPageType.BUILDER) ? "UPDATE catalog_items_bc SET order_number = ? WHERE id = ?" : "UPDATE catalog_items SET order_number = ? WHERE id = ?")) {
-            statement.setInt(1, orderNumber);
-            statement.setInt(2, offerId);
-            if (statement.executeUpdate() == 0) {
-                this.client.sendResponse(new CatalogAdminResultComposer(false, "Offer not found: " + offerId));
-                return;
-            }
-        }
-
-        this.client.sendResponse(new CatalogAdminResultComposer(true, "Offer reordered"));
+        CatalogStudioMutationEnvelope envelope = CatalogStudioRequestParser.parseMutationEnvelope(this.packet);
+        int targetOrderNumber = orderNumber;
+        var result = CatalogStudioRuntime.services()
+                .liveMutations()
+                .updateOffer(
+                        envelope.expectedRevision(),
+                        envelope.operationId(),
+                        this.client.getHabbo().getHabboInfo().getId(),
+                        envelope.summary(),
+                        pageType,
+                        offerId,
+                        offer -> CatalogSnapshotPatch.setOfferOrder(offer, targetOrderNumber),
+                        CatalogChangeOperation.MOVE);
+        this.client.sendResponse(
+                new CatalogAdminResultComposer(true, "Offer reordered live at revision " + result.revision()));
     }
 }

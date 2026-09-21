@@ -1,13 +1,14 @@
 package com.eu.habbo.messages.incoming.catalog.catalogadmin;
 
-import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.catalog.CatalogPageType;
+import com.eu.habbo.habbohotel.catalog.versioning.CatalogChangeOperation;
+import com.eu.habbo.habbohotel.catalog.versioning.CatalogEntityType;
 import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.messages.incoming.MessageHandler;
+import com.eu.habbo.messages.incoming.catalog.catalogadmin.studio.CatalogStudioMutationEnvelope;
+import com.eu.habbo.messages.incoming.catalog.catalogadmin.studio.CatalogStudioRequestParser;
+import com.eu.habbo.messages.incoming.catalog.catalogadmin.studio.CatalogStudioRuntime;
 import com.eu.habbo.messages.outgoing.catalog.catalogadmin.CatalogAdminResultComposer;
-
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 
 public class CatalogAdminDeleteOfferEvent extends MessageHandler {
 
@@ -26,15 +27,33 @@ public class CatalogAdminDeleteOfferEvent extends MessageHandler {
             return;
         }
 
-        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement((pageType == CatalogPageType.BUILDER) ? "DELETE FROM catalog_items_bc WHERE id = ?" : "DELETE FROM catalog_items WHERE id = ?")) {
-            statement.setInt(1, offerId);
-            if (statement.executeUpdate() == 0) {
-                this.client.sendResponse(new CatalogAdminResultComposer(false, "Offer not found: " + offerId));
-                return;
-            }
+        CatalogStudioMutationEnvelope envelope = CatalogStudioRequestParser.parseMutationEnvelope(this.packet);
+        int limitedSells = CatalogStudioRuntime.services()
+                .operationalOffers()
+                .findLimitedSells(offerId)
+                .orElse(0);
+        if (limitedSells > 0) {
+            this.client.sendResponse(
+                    new CatalogAdminResultComposer(false, "Limited offers with completed sales cannot be deleted"));
+            return;
         }
-
-        this.client.sendResponse(new CatalogAdminResultComposer(true, "Offer deleted"));
+        var result = CatalogStudioRuntime.services()
+                .liveMutations()
+                .apply(
+                        CatalogAdminLiveRequest.of(
+                                envelope,
+                                this.client.getHabbo().getHabboInfo().getId(),
+                                CatalogEntityType.OFFER,
+                                pageType,
+                                offerId,
+                                CatalogChangeOperation.DELETE,
+                                null),
+                        live -> {
+                            if (live.offer(pageType, offerId).isEmpty()) {
+                                throw new IllegalArgumentException("Live catalog offer not found: " + offerId);
+                            }
+                        });
+        this.client.sendResponse(
+                new CatalogAdminResultComposer(true, "Offer deleted live at revision " + result.revision()));
     }
 }

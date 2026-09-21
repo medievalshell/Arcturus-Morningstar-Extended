@@ -9,24 +9,26 @@ import com.eu.habbo.messages.ISerialize;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.Incoming;
 import com.eu.habbo.messages.incoming.MessageHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RoomChatMessage.class);
-    private static final String QUERY = "INSERT INTO chatlogs_room (user_from_id, user_to_id, message, timestamp, room_id) VALUES (?, ?, ?, ?, ?)";
+    private static final String QUERY =
+            "INSERT INTO chatlogs_room (user_from_id, user_to_id, message, timestamp, room_id) VALUES (?, ?, ?, ?, ?)";
 
+    public static final int NO_BUBBLE_WIDTH_OVERRIDE = -1;
+    private static final int WIDEST_BUBBLE_WIDTH = 0, THINNEST_BUBBLE_WIDTH = 2;
     private static final List<String> chatColors = Arrays.asList("@red@", "@cyan@", "@blue@", "@green@", "@purple@");
-    public static int MAXIMUM_LENGTH = 100;
-    //Configuration. Loaded from database & updated accordingly.
-    public static boolean SAVE_ROOM_CHATS = false;
-    public static int[] BANNED_BUBBLES = {};
+    public static volatile int MAXIMUM_LENGTH = 100;
+    // Configuration. Loaded from database & updated accordingly.
+    public static volatile boolean SAVE_ROOM_CHATS = false;
+    public static volatile int[] BANNED_BUBBLES = {};
     private final Habbo habbo;
     public int roomId;
     public boolean isCommand = false;
@@ -38,12 +40,15 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
     private RoomChatMessageBubbles bubble;
     private Habbo targetHabbo;
     private byte emotion;
-	private String RoomChatColour; // Added Chatcolor
+    private String RoomChatColour; // Added Chatcolor
+    /** -1 follows the room setting; 0 wide, 1 normal, 2 thin as the room chat settings name them. */
+    private int bubbleWidthOverride = NO_BUBBLE_WIDTH_OVERRIDE;
 
     public RoomChatMessage(MessageHandler message) {
         if (message.packet.getMessageId() == Incoming.RoomUserWhisperEvent) {
             String data = message.packet.readString();
-            this.targetHabbo = message.client.getHabbo().getHabboInfo().getCurrentRoom().getHabbo(data.split(" ")[0]);
+            this.targetHabbo =
+                    message.client.getHabbo().getHabboInfo().getCurrentRoom().getHabbo(data.split(" ")[0]);
             this.message = data.substring(data.split(" ")[0].length() + 1);
         } else {
             this.message = message.packet.readString();
@@ -83,6 +88,7 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
         this.bubble = chatMessage.getBubble();
         this.roomUnitId = chatMessage.roomUnitId;
         this.emotion = (byte) chatMessage.getEmotion();
+        this.bubbleWidthOverride = chatMessage.bubbleWidthOverride;
     }
 
     public RoomChatMessage(String message, RoomUnit roomUnit, RoomChatMessageBubbles bubble) {
@@ -125,7 +131,12 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
             this.emotion = 1;
         } else if (this.message.contains(":@") || this.message.contains(">:(")) {
             this.emotion = 2;
-        } else if (this.message.contains(":o") || this.message.contains(":O") || this.message.contains(":0") || this.message.contains("O.o") || this.message.contains("o.O") || this.message.contains("O.O")) {
+        } else if (this.message.contains(":o")
+                || this.message.contains(":O")
+                || this.message.contains(":0")
+                || this.message.contains("O.o")
+                || this.message.contains("o.O")
+                || this.message.contains("O.O")) {
             this.emotion = 3;
         } else if (this.message.contains(":(") || this.message.contains(":-(") || this.message.contains(":[")) {
             this.emotion = 4;
@@ -134,8 +145,7 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
 
     @Override
     public void run() {
-        if (this.habbo == null)
-            return;
+        if (this.habbo == null) return;
 
         if (this.message.length() > RoomChatMessage.MAXIMUM_LENGTH) {
             try {
@@ -201,11 +211,12 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
             message.appendInt(this.getEmotion());
             message.appendInt(this.getBubble().getType());
             message.appendInt(0);
-			message.appendString(this.RoomChatColour); //Added packet for room chat
+            message.appendString(this.RoomChatColour); // Added packet for room chat
             message.appendInt(this.getMessage().length());
 
             // Custom prefix data
-            UserCustomizationData customizationData = (this.habbo != null) ? UserCustomizationData.fromHabbo(this.habbo) : UserCustomizationData.empty();
+            UserCustomizationData customizationData =
+                    (this.habbo != null) ? UserCustomizationData.fromHabbo(this.habbo) : UserCustomizationData.empty();
             message.appendString(customizationData.prefixText);
             message.appendString(customizationData.prefixColor);
             message.appendString(customizationData.prefixIcon);
@@ -213,9 +224,24 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
             message.appendString(customizationData.prefixFont);
             message.appendString(customizationData.nickIcon);
             message.appendString(customizationData.displayOrder);
+            // Optional tail: an old client stops reading before it, a new one reads -1 as "room setting".
+            message.appendInt(this.bubbleWidthOverride);
         } catch (Exception e) {
             LOGGER.error("Caught exception", e);
         }
+    }
+
+    public int getBubbleWidthOverride() {
+        return this.bubbleWidthOverride;
+    }
+
+    public void setBubbleWidthOverride(int bubbleWidthOverride) {
+        this.bubbleWidthOverride = normalizeBubbleWidthOverride(bubbleWidthOverride);
+    }
+
+    /** Anything that is not one of the three widths means "no override". */
+    public static int normalizeBubbleWidthOverride(int value) {
+        return (value >= WIDEST_BUBBLE_WIDTH && value <= THINNEST_BUBBLE_WIDTH) ? value : NO_BUBBLE_WIDTH_OVERRIDE;
     }
 
     public void filter() {
@@ -225,7 +251,8 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
             }
         }
 
-        if (Emulator.getConfig().getBoolean("hotel.wordfilter.enabled") && Emulator.getConfig().getBoolean("hotel.wordfilter.rooms")) {
+        if (Emulator.getConfig().getBoolean("hotel.wordfilter.enabled")
+                && Emulator.getConfig().getBoolean("hotel.wordfilter.rooms")) {
             if (!this.habbo.hasPermission(Permission.ACC_CHAT_NO_FILTER)) {
                 if (!Emulator.getGameEnvironment().getWordFilter().autoReportCheck(this)) {
                     if (!Emulator.getGameEnvironment().getWordFilter().hideMessageCheck(this.message)) {
@@ -257,8 +284,7 @@ public class RoomChatMessage implements Runnable, ISerialize, DatabaseLoggable {
 
         if (this.targetHabbo != null)
             statement.setInt(2, this.targetHabbo.getHabboInfo().getId());
-        else
-            statement.setInt(2, 0);
+        else statement.setInt(2, 0);
 
         statement.setString(3, this.unfilteredMessage);
         statement.setInt(4, this.timestamp);

@@ -3,20 +3,18 @@ package com.eu.habbo.networking.gameserver.auth;
 import com.eu.habbo.Emulator;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.Base64;
 import java.util.UUID;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class RememberJwtService {
 
@@ -72,9 +70,9 @@ public final class RememberJwtService {
             String generated = Base64.getEncoder().withoutPadding().encodeToString(buf);
 
             try (Connection conn = Emulator.getDatabase().getDataSource().getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "INSERT INTO emulator_settings (`key`, `value`) VALUES ('login.remember.jwt.secret', ?) "
-                                 + "ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)")) {
+                    PreparedStatement stmt = conn.prepareStatement(
+                            "INSERT INTO emulator_settings (`key`, `value`) VALUES ('login.remember.jwt.secret', ?) "
+                                    + "ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)")) {
                 stmt.setString(1, generated);
                 stmt.executeUpdate();
             } catch (SQLException e) {
@@ -88,10 +86,13 @@ public final class RememberJwtService {
         }
     }
 
-    public static RotationResult issueForNewFamily(Connection conn, int userId, String username, String ip) throws SQLException {
+    public static RotationResult issueForNewFamily(Connection conn, int userId, String username, String ip)
+            throws SQLException {
         String familyId = UUID.randomUUID().toString();
         long now = Emulator.getIntUnixTimestamp();
         long expiresAt = now + familyTtlSeconds();
+        UserIdentity identity = loadUserIdentity(conn, userId);
+        if (identity == null) throw new SQLException("Remember-token user does not exist: " + userId);
 
         try (PreparedStatement ins = conn.prepareStatement(
                 "INSERT INTO users_remember_families (family_id, user_id, current_version, created_at, expires_at, revoked, last_ip) "
@@ -104,8 +105,18 @@ public final class RememberJwtService {
             ins.executeUpdate();
         }
 
-        String jwt = buildJwt(userId, familyId, 1, now, expiresAt);
+        String jwt = buildJwt(userId, familyId, 1, now, expiresAt, credentialBinding(userId, identity.passwordHash));
         return new RotationResult(jwt, userId, username, expiresAt);
+    }
+
+    public static int peekUserId(String jwt) {
+        try {
+            ParsedJwt parsed = verifyAndParse(jwt);
+            if (parsed.exp <= Emulator.getIntUnixTimestamp()) return 0;
+            return parsed.userId;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     public static RotationResult rotate(Connection conn, String jwt, String ip) {
@@ -119,6 +130,18 @@ public final class RememberJwtService {
 
         long now = Emulator.getIntUnixTimestamp();
         if (parsed.exp <= now) return null;
+
+        UserIdentity identity;
+        try {
+            identity = loadUserIdentity(conn, parsed.userId);
+        } catch (SQLException e) {
+            LOGGER.error("[auth/remember] user security-state lookup failed", e);
+            return null;
+        }
+        if (identity == null || !parsed.credential.equals(credentialBinding(parsed.userId, identity.passwordHash))) {
+            revokeFamilyById(conn, parsed.familyId);
+            return null;
+        }
 
         int familyVersion = 0;
         boolean revoked = false;
@@ -141,14 +164,20 @@ public final class RememberJwtService {
         if (revoked || familyExpiresAt <= now) return null;
 
         if (parsed.version < familyVersion) {
-            LOGGER.warn("[auth/remember] replay detected: familyId={} presented v={} but current is v={}, revoking family",
-                    parsed.familyId, parsed.version, familyVersion);
+            LOGGER.warn(
+                    "[auth/remember] replay detected: familyId={} presented v={} but current is v={}, revoking family",
+                    parsed.familyId,
+                    parsed.version,
+                    familyVersion);
             revokeFamilyById(conn, parsed.familyId);
             return null;
         }
         if (parsed.version > familyVersion) {
-            LOGGER.warn("[auth/remember] future version: familyId={} presented v={} but current is v={}",
-                    parsed.familyId, parsed.version, familyVersion);
+            LOGGER.warn(
+                    "[auth/remember] future version: familyId={} presented v={} but current is v={}",
+                    parsed.familyId,
+                    parsed.version,
+                    familyVersion);
             return null;
         }
 
@@ -170,32 +199,37 @@ public final class RememberJwtService {
             return null;
         }
 
-        String username = null;
-        try (PreparedStatement usr = conn.prepareStatement("SELECT username FROM users WHERE id = ? LIMIT 1")) {
-            usr.setInt(1, parsed.userId);
-            try (ResultSet rs = usr.executeQuery()) {
-                if (rs.next()) username = rs.getString("username");
-            }
-        } catch (SQLException e) {
-            LOGGER.error("[auth/remember] username lookup failed", e);
-        }
-
-        if (username == null) return null;
-
-        String newJwt = buildJwt(parsed.userId, parsed.familyId, newVersion, now, newExpiresAt);
-        return new RotationResult(newJwt, parsed.userId, username, newExpiresAt);
+        String newJwt = buildJwt(
+                parsed.userId,
+                parsed.familyId,
+                newVersion,
+                now,
+                newExpiresAt,
+                credentialBinding(parsed.userId, identity.passwordHash));
+        return new RotationResult(newJwt, parsed.userId, identity.username, newExpiresAt);
     }
 
-    public static void revokeFromToken(Connection conn, String jwt) {
+    public static int revokeFromToken(Connection conn, String jwt) {
         try {
             ParsedJwt p = verifyAndParse(jwt);
             revokeFamilyById(conn, p.familyId);
-        } catch (Exception ignored) { }
+            return p.userId;
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    public static void revokeAllForUser(Connection conn, int userId) throws SQLException {
+        try (PreparedStatement update =
+                conn.prepareStatement("UPDATE users_remember_families SET revoked = 1 WHERE user_id = ?")) {
+            update.setInt(1, userId);
+            update.executeUpdate();
+        }
     }
 
     private static void revokeFamilyById(Connection conn, String familyId) {
-        try (PreparedStatement upd = conn.prepareStatement(
-                "UPDATE users_remember_families SET revoked = 1 WHERE family_id = ?")) {
+        try (PreparedStatement upd =
+                conn.prepareStatement("UPDATE users_remember_families SET revoked = 1 WHERE family_id = ?")) {
             upd.setString(1, familyId);
             upd.executeUpdate();
         } catch (SQLException e) {
@@ -203,7 +237,7 @@ public final class RememberJwtService {
         }
     }
 
-    private static String buildJwt(int userId, String familyId, int version, long iat, long exp) {
+    private static String buildJwt(int userId, String familyId, int version, long iat, long exp, String credential) {
         JsonObject header = new JsonObject();
         header.addProperty("alg", "HS256");
         header.addProperty("typ", "JWT");
@@ -211,16 +245,17 @@ public final class RememberJwtService {
         JsonObject payload = new JsonObject();
         payload.addProperty("sub", userId);
         payload.addProperty("fid", familyId);
-        payload.addProperty("v",   version);
+        payload.addProperty("v", version);
         payload.addProperty("iat", iat);
         payload.addProperty("exp", exp);
         payload.addProperty("typ", "refresh");
+        payload.addProperty("cred", credential);
 
         String h = URL_ENC.encodeToString(header.toString().getBytes(StandardCharsets.UTF_8));
         String p = URL_ENC.encodeToString(payload.toString().getBytes(StandardCharsets.UTF_8));
         String signingInput = h + "." + p;
-        String sig = URL_ENC.encodeToString(hmacSha256(secret().getBytes(StandardCharsets.UTF_8),
-                signingInput.getBytes(StandardCharsets.UTF_8)));
+        String sig = URL_ENC.encodeToString(
+                hmacSha256(secret().getBytes(StandardCharsets.UTF_8), signingInput.getBytes(StandardCharsets.UTF_8)));
         return signingInput + "." + sig;
     }
 
@@ -229,12 +264,14 @@ public final class RememberJwtService {
         final String familyId;
         final int version;
         final long exp;
+        final String credential;
 
-        ParsedJwt(int userId, String familyId, int version, long exp) {
+        ParsedJwt(int userId, String familyId, int version, long exp, String credential) {
             this.userId = userId;
             this.familyId = familyId;
             this.version = version;
             this.exp = exp;
+            this.credential = credential;
         }
     }
 
@@ -245,21 +282,44 @@ public final class RememberJwtService {
         if (parts.length != 3) throw new IllegalArgumentException("not 3 segments");
 
         String signingInput = parts[0] + "." + parts[1];
-        byte[] expected = hmacSha256(secret().getBytes(StandardCharsets.UTF_8), signingInput.getBytes(StandardCharsets.UTF_8));
+        byte[] expected =
+                hmacSha256(secret().getBytes(StandardCharsets.UTF_8), signingInput.getBytes(StandardCharsets.UTF_8));
         byte[] provided = URL_DEC.decode(parts[2]);
         if (!constantTimeEquals(expected, provided)) throw new SecurityException("bad signature");
 
         byte[] payloadBytes = URL_DEC.decode(parts[1]);
-        JsonObject payload = JsonParser.parseString(new String(payloadBytes, StandardCharsets.UTF_8)).getAsJsonObject();
+        JsonObject payload = JsonParser.parseString(new String(payloadBytes, StandardCharsets.UTF_8))
+                .getAsJsonObject();
 
-        if (!payload.has("typ") || !"refresh".equals(payload.get("typ").getAsString())) throw new IllegalArgumentException("wrong typ");
-        int userId  = payload.get("sub").getAsInt();
-        String fid  = payload.get("fid").getAsString();
+        if (!payload.has("typ") || !"refresh".equals(payload.get("typ").getAsString()))
+            throw new IllegalArgumentException("wrong typ");
+        int userId = payload.get("sub").getAsInt();
+        String fid = payload.get("fid").getAsString();
         int version = payload.get("v").getAsInt();
-        long exp    = payload.get("exp").getAsLong();
+        long exp = payload.get("exp").getAsLong();
+        String credential = payload.get("cred").getAsString();
 
-        return new ParsedJwt(userId, fid, version, exp);
+        return new ParsedJwt(userId, fid, version, exp, credential);
     }
+
+    private static UserIdentity loadUserIdentity(Connection conn, int userId) throws SQLException {
+        try (PreparedStatement user =
+                conn.prepareStatement("SELECT username, password FROM users WHERE id = ? LIMIT 1")) {
+            user.setInt(1, userId);
+            try (ResultSet result = user.executeQuery()) {
+                if (!result.next()) return null;
+                return new UserIdentity(result.getString("username"), result.getString("password"));
+            }
+        }
+    }
+
+    private static String credentialBinding(int userId, String passwordHash) {
+        String value = userId + "\0" + (passwordHash == null ? "" : passwordHash);
+        return URL_ENC.encodeToString(
+                hmacSha256(secret().getBytes(StandardCharsets.UTF_8), value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private record UserIdentity(String username, String passwordHash) {}
 
     private static byte[] hmacSha256(byte[] key, byte[] data) {
         try {

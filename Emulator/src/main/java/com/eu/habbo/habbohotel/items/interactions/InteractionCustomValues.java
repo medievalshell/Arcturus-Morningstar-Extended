@@ -6,7 +6,6 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.messages.ServerMessage;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
@@ -15,21 +14,31 @@ import java.util.Map;
 public abstract class InteractionCustomValues extends HabboItem {
     public final Map<String, String> values = new HashMap<>();
 
-    public InteractionCustomValues(ResultSet set, Item baseItem, Map<String, String> defaultValues) throws SQLException {
+    public InteractionCustomValues(ResultSet set, Item baseItem, Map<String, String> defaultValues)
+            throws SQLException {
         super(set, baseItem);
 
         this.values.putAll(defaultValues);
 
         for (String s : set.getString("extra_data").split(";")) {
-            String[] data = s.split("=");
-
-            if (data.length == 2) {
-                this.values.put(data[0], data[1]);
+            // Split on the FIRST '=' only: values such as room-ad image URLs
+            // carry '=' in their query string, and splitting on every '='
+            // used to drop them (data.length != 2), so the ad image vanished.
+            int separator = s.indexOf('=');
+            if (separator > 0) {
+                this.values.put(s.substring(0, separator), s.substring(separator + 1));
             }
         }
     }
 
-    public InteractionCustomValues(int id, int userId, Item item, String extradata, int limitedStack, int limitedSells, Map<String, String> defaultValues) {
+    public InteractionCustomValues(
+            int id,
+            int userId,
+            Item item,
+            String extradata,
+            int limitedStack,
+            int limitedSells,
+            Map<String, String> defaultValues) {
         super(id, userId, item, extradata, limitedStack, limitedSells);
 
         this.values.putAll(defaultValues);
@@ -46,9 +55,7 @@ public abstract class InteractionCustomValues extends HabboItem {
     }
 
     @Override
-    public void onWalk(RoomUnit roomUnit, Room room, Object[] objects) throws Exception {
-
-    }
+    public void onWalk(RoomUnit roomUnit, Room room, Object[] objects) throws Exception {}
 
     @Override
     public void run() {
@@ -80,7 +87,5 @@ public abstract class InteractionCustomValues extends HabboItem {
         super.serializeExtradata(serverMessage);
     }
 
-    public void onCustomValuesSaved(Room room, GameClient client, Map<String, String> oldValues) {
-
-    }
+    public void onCustomValuesSaved(Room room, GameClient client, Map<String, String> oldValues) {}
 }

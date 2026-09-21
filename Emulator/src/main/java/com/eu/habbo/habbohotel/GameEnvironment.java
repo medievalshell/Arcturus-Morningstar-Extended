@@ -1,21 +1,26 @@
 package com.eu.habbo.habbohotel;
 
 import com.eu.habbo.Emulator;
-import com.eu.habbo.core.*;
+import com.eu.habbo.core.CreditsScheduler;
+import com.eu.habbo.core.GotwPointsScheduler;
+import com.eu.habbo.core.PixelScheduler;
+import com.eu.habbo.core.PointsScheduler;
 import com.eu.habbo.habbohotel.achievements.AchievementManager;
 import com.eu.habbo.habbohotel.bots.BotManager;
 import com.eu.habbo.habbohotel.campaign.calendar.CalendarManager;
 import com.eu.habbo.habbohotel.catalog.CatalogManager;
-import com.eu.habbo.habbohotel.wheel.WheelManager;
-import com.eu.habbo.habbohotel.soundboard.SoundboardManager;
-import com.eu.habbo.habbohotel.mentions.MentionManager;
 import com.eu.habbo.habbohotel.commands.CommandHandler;
+import com.eu.habbo.habbohotel.communitygoals.CommunityGoalManager;
 import com.eu.habbo.habbohotel.crafting.CraftingManager;
 import com.eu.habbo.habbohotel.guides.GuideManager;
 import com.eu.habbo.habbohotel.guilds.GuildManager;
+import com.eu.habbo.habbohotel.habbicons.HabbiconService;
 import com.eu.habbo.habbohotel.hotelview.HotelViewManager;
+import com.eu.habbo.habbohotel.hotlooks.HotLooksManager;
 import com.eu.habbo.habbohotel.items.FurnitureTextProvider;
 import com.eu.habbo.habbohotel.items.ItemManager;
+import com.eu.habbo.habbohotel.items.rentable.RentableFurnitureManager;
+import com.eu.habbo.habbohotel.mentions.MentionManager;
 import com.eu.habbo.habbohotel.modtool.ModToolManager;
 import com.eu.habbo.habbohotel.modtool.ModToolSanctions;
 import com.eu.habbo.habbohotel.modtool.WordFilter;
@@ -25,18 +30,28 @@ import com.eu.habbo.habbohotel.pets.PetManager;
 import com.eu.habbo.habbohotel.polls.PollManager;
 import com.eu.habbo.habbohotel.rooms.RoomChatBubbleManager;
 import com.eu.habbo.habbohotel.rooms.RoomManager;
+import com.eu.habbo.habbohotel.soundboard.SoundboardManager;
 import com.eu.habbo.habbohotel.translations.GoogleTranslateManager;
+import com.eu.habbo.habbohotel.traxeditor.TraxEditorManager;
+import com.eu.habbo.habbohotel.treasurehunt.TreasureHuntManager;
 import com.eu.habbo.habbohotel.users.HabboManager;
 import com.eu.habbo.habbohotel.users.custombadge.CustomBadgeManager;
 import com.eu.habbo.habbohotel.users.infostand.InfostandBackgroundManager;
 import com.eu.habbo.habbohotel.users.subscriptions.SubscriptionManager;
 import com.eu.habbo.habbohotel.users.subscriptions.SubscriptionScheduler;
+import com.eu.habbo.habbohotel.wheel.WheelManager;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.Executor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class GameEnvironment {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GameEnvironment.class);
+    private final HotelServiceRegistry services = new HotelServiceRegistry();
+    private final Executor persistenceExecutor;
 
     public CreditsScheduler creditsScheduler;
     public PixelScheduler pixelScheduler;
@@ -51,6 +66,8 @@ public class GameEnvironment {
     private FurnitureTextProvider furnitureTextProvider;
     private CatalogManager catalogManager;
     private HotelViewManager hotelViewManager;
+    private CommunityGoalManager communityGoalManager;
+    private TreasureHuntManager treasureHuntManager;
     private RoomManager roomManager;
     private CommandHandler commandHandler;
     private PermissionsManager permissionsManager;
@@ -70,83 +87,215 @@ public class GameEnvironment {
     private CustomBadgeManager customBadgeManager;
     private InfostandBackgroundManager infostandBackgroundManager;
     private WheelManager wheelManager;
+    private HotLooksManager hotLooksManager;
+    private final HabbiconService habbiconService;
     private SoundboardManager soundboardManager;
+    private TraxEditorManager traxEditorManager;
     private MentionManager mentionManager;
+    private com.eu.habbo.habbohotel.quests.QuestManager questManager;
+    private com.eu.habbo.habbohotel.quests.DailyTaskManager dailyTaskManager;
+    private com.eu.habbo.habbohotel.quests.RewardTrackManager rewardTrackManager;
+    private RentableFurnitureManager rentableFurnitureManager;
+
+    public GameEnvironment() {
+        this(Runnable::run);
+    }
+
+    public GameEnvironment(Executor persistenceExecutor) {
+        this(persistenceExecutor, null);
+    }
+
+    public GameEnvironment(Executor persistenceExecutor, HabbiconService habbiconService) {
+        this.habbiconService = habbiconService;
+        this.persistenceExecutor = Objects.requireNonNull(persistenceExecutor, "persistenceExecutor");
+    }
 
     public void load() throws Exception {
         LOGGER.info("GameEnvironment -> Loading...");
 
-        this.permissionsManager = new PermissionsManager();
-        this.habboManager = new HabboManager();
-        this.hotelViewManager = new HotelViewManager();
-        this.itemManager = new ItemManager();
+        this.permissionsManager = this.services.create("permissions manager", PermissionsManager::new);
+        this.habboManager = this.services.create(
+                "habbo manager",
+                () -> new HabboManager(this.persistenceExecutor, this.habbiconService),
+                HabboManager::dispose);
+        this.hotelViewManager =
+                this.services.create("hotel view manager", HotelViewManager::new, HotelViewManager::dispose);
+        this.communityGoalManager = this.services.create(
+                "community goal manager", CommunityGoalManager::new, CommunityGoalManager::dispose);
+        this.treasureHuntManager =
+                this.services.create("treasure hunt manager", TreasureHuntManager::new, TreasureHuntManager::dispose);
+        this.itemManager = this.services.create("item manager", ItemManager::new, ItemManager::dispose);
         this.itemManager.load();
-        this.furnitureTextProvider = new FurnitureTextProvider();
+        this.furnitureTextProvider = this.services.create("furniture text provider", FurnitureTextProvider::new);
         this.furnitureTextProvider.init();
-        this.botManager = new BotManager();
-        this.petManager = new PetManager();
-        this.guildManager = new GuildManager();
-        this.catalogManager = new CatalogManager();
-        this.roomManager = new RoomManager();
-        this.navigatorManager = new NavigatorManager();
-        this.commandHandler = new CommandHandler();
-        this.modToolManager = new ModToolManager();
-        this.modToolSanctions = new ModToolSanctions();
-        this.achievementManager = new AchievementManager();
+        this.botManager = this.services.create("bot manager", BotManager::new, BotManager::dispose);
+        this.petManager = this.services.create("pet manager", PetManager::new);
+        this.guildManager = this.services.create("guild manager", GuildManager::new, GuildManager::dispose);
+        this.catalogManager = this.services.create("catalog manager", CatalogManager::new, CatalogManager::dispose);
+        this.roomManager = this.services.create(
+                "room manager", () -> new RoomManager(this.persistenceExecutor), RoomManager::dispose);
+        this.services.beforeDispose("room cycles", () -> this.roomManager.quiesceRoomCycles());
+        this.navigatorManager = this.services.create("navigator manager", NavigatorManager::new);
+        this.commandHandler = this.services.create("command handler", CommandHandler::new, CommandHandler::dispose);
+        this.modToolManager = this.services.create("moderation tools", ModToolManager::new);
+        this.modToolSanctions = this.services.create("moderation sanctions", ModToolSanctions::new);
+        this.achievementManager = this.services.create("achievement manager", AchievementManager::new);
         this.achievementManager.reload();
-        this.guideManager = new GuideManager();
-        this.wordFilter = new WordFilter();
-        this.craftingManager = new CraftingManager();
-        this.pollManager = new PollManager();
-        this.calendarManager = new CalendarManager();
-        this.roomChatBubbleManager = new RoomChatBubbleManager();
-        this.googleTranslateManager = new GoogleTranslateManager();
-        this.customBadgeManager = new CustomBadgeManager();
-        this.infostandBackgroundManager = new InfostandBackgroundManager();
-        this.wheelManager = new WheelManager();
-        this.soundboardManager = new SoundboardManager();
-        this.mentionManager = new MentionManager();
+        this.guideManager = this.services.create("guide manager", GuideManager::new);
+        this.wordFilter = this.services.create("word filter", WordFilter::new);
+        this.craftingManager = this.services.create("crafting manager", CraftingManager::new, CraftingManager::dispose);
+        this.pollManager = this.services.create("poll manager", PollManager::new);
+        this.calendarManager = this.services.create("calendar manager", CalendarManager::new, CalendarManager::dispose);
+        this.roomChatBubbleManager = this.services.create("room chat bubbles", RoomChatBubbleManager::new);
+        this.googleTranslateManager = this.services.create(
+                "Google Translate cache", GoogleTranslateManager::new, GoogleTranslateManager::clearCache);
+        this.customBadgeManager = this.services.create("custom badge manager", CustomBadgeManager::new);
+        this.infostandBackgroundManager =
+                this.services.create("infostand backgrounds", InfostandBackgroundManager::new);
+        this.wheelManager = this.services.create("wheel manager", WheelManager::new);
+        this.hotLooksManager = this.services.create("hot looks manager", HotLooksManager::new);
+        this.soundboardManager =
+                this.services.create("soundboard manager", () -> new SoundboardManager(this.permissionsManager));
+        this.traxEditorManager = this.services.create("trax editor manager", TraxEditorManager::new);
+        this.mentionManager = this.services.create("mention manager", MentionManager::new);
+        this.questManager = this.services.create("quest manager", com.eu.habbo.habbohotel.quests.QuestManager::new);
+        this.dailyTaskManager =
+                this.services.create("daily task manager", com.eu.habbo.habbohotel.quests.DailyTaskManager::new);
+        this.rewardTrackManager =
+                this.services.create("reward track manager", com.eu.habbo.habbohotel.quests.RewardTrackManager::new);
+        this.rentableFurnitureManager = this.services.create(
+                "rentable furniture", RentableFurnitureManager::new, RentableFurnitureManager::dispose);
 
         this.roomManager.loadPublicRooms();
         this.navigatorManager.loadNavigator();
 
-        this.creditsScheduler = new CreditsScheduler();
+        this.creditsScheduler = this.services.create("credits scheduler", CreditsScheduler::new);
+        this.services.onDispose("credits scheduler", () -> {
+            if (this.creditsScheduler != null) {
+                this.creditsScheduler.setDisposed(true);
+            }
+        });
         Emulator.getThreading().run(this.creditsScheduler);
-        this.pixelScheduler = new PixelScheduler();
+        this.pixelScheduler = this.services.create("pixel scheduler", PixelScheduler::new);
+        this.services.onDispose("pixel scheduler", () -> {
+            if (this.pixelScheduler != null) {
+                this.pixelScheduler.setDisposed(true);
+            }
+        });
         Emulator.getThreading().run(this.pixelScheduler);
-        this.pointsScheduler = new PointsScheduler();
+        this.pointsScheduler = this.services.create("points scheduler", PointsScheduler::new);
+        this.services.onDispose("points scheduler", () -> {
+            if (this.pointsScheduler != null) {
+                this.pointsScheduler.setDisposed(true);
+            }
+        });
         Emulator.getThreading().run(this.pointsScheduler);
-        this.gotwPointsScheduler = new GotwPointsScheduler();
+        this.gotwPointsScheduler = this.services.create("gotw points scheduler", GotwPointsScheduler::new);
+        this.services.onDispose("gotw points scheduler", () -> {
+            if (this.gotwPointsScheduler != null) {
+                this.gotwPointsScheduler.setDisposed(true);
+            }
+        });
         Emulator.getThreading().run(this.gotwPointsScheduler);
 
-        this.subscriptionManager = new SubscriptionManager();
+        this.subscriptionManager =
+                this.services.create("subscription manager", SubscriptionManager::new, SubscriptionManager::dispose);
         this.subscriptionManager.init();
 
-        this.subscriptionScheduler = new SubscriptionScheduler();
+        this.subscriptionScheduler = this.services.create("subscription scheduler", SubscriptionScheduler::new);
+        this.services.onDispose("subscription scheduler", () -> {
+            if (this.subscriptionScheduler != null) {
+                this.subscriptionScheduler.setDisposed(true);
+            }
+        });
         Emulator.getThreading().run(this.subscriptionScheduler);
 
         LOGGER.info("GameEnvironment -> Loaded!");
     }
 
     public void dispose() {
-        this.pointsScheduler.setDisposed(true);
-        this.pixelScheduler.setDisposed(true);
-        this.creditsScheduler.setDisposed(true);
-        this.gotwPointsScheduler.setDisposed(true);
-        this.craftingManager.dispose();
-        this.habboManager.dispose();
-        this.commandHandler.dispose();
-        this.guildManager.dispose();
-        this.catalogManager.dispose();
-        this.roomManager.dispose();
-        this.itemManager.dispose();
-        this.hotelViewManager.dispose();
-        this.subscriptionManager.dispose();
-        this.calendarManager.dispose();
-        if (this.googleTranslateManager != null) {
-            this.googleTranslateManager.clearCache();
+        if (this.services.hasServices()) {
+            this.services.dispose();
+            LOGGER.info("GameEnvironment -> Disposed!");
+            return;
         }
+
+        Map<String, Runnable> steps = new LinkedHashMap<>();
+        steps.put(
+                "points scheduler",
+                this.pointsScheduler == null
+                        ? null
+                        : () -> {
+                            this.pointsScheduler.setDisposed(true);
+                        });
+        steps.put(
+                "pixel scheduler",
+                this.pixelScheduler == null
+                        ? null
+                        : () -> {
+                            this.pixelScheduler.setDisposed(true);
+                        });
+        steps.put(
+                "credits scheduler",
+                this.creditsScheduler == null
+                        ? null
+                        : () -> {
+                            this.creditsScheduler.setDisposed(true);
+                        });
+        steps.put(
+                "gotw points scheduler",
+                this.gotwPointsScheduler == null
+                        ? null
+                        : () -> {
+                            this.gotwPointsScheduler.setDisposed(true);
+                        });
+        steps.put(
+                "subscription scheduler",
+                this.subscriptionScheduler == null
+                        ? null
+                        : () -> {
+                            this.subscriptionScheduler.setDisposed(true);
+                        });
+        steps.put("room cycles", this.roomManager == null ? null : () -> this.roomManager.quiesceRoomCycles());
+        steps.put("crafting manager", this.craftingManager == null ? null : () -> this.craftingManager.dispose());
+        steps.put("habbo manager", this.habboManager == null ? null : () -> this.habboManager.dispose());
+        steps.put("command handler", this.commandHandler == null ? null : () -> this.commandHandler.dispose());
+        steps.put("guild manager", this.guildManager == null ? null : () -> this.guildManager.dispose());
+        steps.put("catalog manager", this.catalogManager == null ? null : () -> this.catalogManager.dispose());
+        steps.put("room manager", this.roomManager == null ? null : () -> this.roomManager.dispose());
+        steps.put("bot manager", this.botManager == null ? null : () -> this.botManager.dispose());
+        steps.put("item manager", this.itemManager == null ? null : () -> this.itemManager.dispose());
+        steps.put("hotel view manager", this.hotelViewManager == null ? null : () -> this.hotelViewManager.dispose());
+        steps.put(
+                "community goal manager",
+                this.communityGoalManager == null ? null : () -> this.communityGoalManager.dispose());
+        steps.put(
+                "treasure hunt manager",
+                this.treasureHuntManager == null ? null : () -> this.treasureHuntManager.dispose());
+        steps.put(
+                "subscription manager",
+                this.subscriptionManager == null ? null : () -> this.subscriptionManager.dispose());
+        steps.put("calendar manager", this.calendarManager == null ? null : () -> this.calendarManager.dispose());
+        steps.put(
+                "Google Translate cache",
+                this.googleTranslateManager == null ? null : () -> this.googleTranslateManager.clearCache());
+
+        disposeAll(steps);
         LOGGER.info("GameEnvironment -> Disposed!");
+    }
+
+    static void disposeAll(Map<String, Runnable> steps) {
+        for (Map.Entry<String, Runnable> step : steps.entrySet()) {
+            if (step.getValue() == null) {
+                continue;
+            }
+
+            try {
+                step.getValue().run();
+            } catch (Exception exception) {
+                LOGGER.error("GameEnvironment -> Failed to dispose {}", step.getKey(), exception);
+            }
+        }
     }
 
     public HabboManager getHabboManager() {
@@ -177,12 +326,28 @@ public class GameEnvironment {
         return this.wheelManager;
     }
 
+    public HotLooksManager getHotLooksManager() {
+        return this.hotLooksManager;
+    }
+
     public SoundboardManager getSoundboardManager() {
         return this.soundboardManager;
     }
 
+    public TraxEditorManager getTraxEditorManager() {
+        return this.traxEditorManager;
+    }
+
     public HotelViewManager getHotelViewManager() {
         return this.hotelViewManager;
+    }
+
+    public CommunityGoalManager getCommunityGoalManager() {
+        return this.communityGoalManager;
+    }
+
+    public TreasureHuntManager getTreasureHuntManager() {
+        return this.treasureHuntManager;
     }
 
     public RoomManager getRoomManager() {
@@ -217,6 +382,22 @@ public class GameEnvironment {
         return this.mentionManager;
     }
 
+    public com.eu.habbo.habbohotel.quests.QuestManager getQuestManager() {
+        return this.questManager;
+    }
+
+    public com.eu.habbo.habbohotel.quests.DailyTaskManager getDailyTaskManager() {
+        return this.dailyTaskManager;
+    }
+
+    public com.eu.habbo.habbohotel.quests.RewardTrackManager getRewardTrackManager() {
+        return this.rewardTrackManager;
+    }
+
+    public RentableFurnitureManager getRentableFurnitureManager() {
+        return this.rentableFurnitureManager;
+    }
+
     public AchievementManager getAchievementManager() {
         return this.achievementManager;
     }
@@ -245,17 +426,21 @@ public class GameEnvironment {
         return this.pixelScheduler;
     }
 
-    public PointsScheduler getPointsScheduler() { return this.pointsScheduler;
+    public PointsScheduler getPointsScheduler() {
+        return this.pointsScheduler;
     }
 
-    public GotwPointsScheduler getGotwPointsScheduler() { return this.gotwPointsScheduler;
+    public GotwPointsScheduler getGotwPointsScheduler() {
+        return this.gotwPointsScheduler;
     }
 
     public SubscriptionManager getSubscriptionManager() {
         return this.subscriptionManager;
     }
 
-    public CalendarManager getCalendarManager() { return this.calendarManager; }
+    public CalendarManager getCalendarManager() {
+        return this.calendarManager;
+    }
 
     public RoomChatBubbleManager getRoomChatBubbleManager() {
         return roomChatBubbleManager;

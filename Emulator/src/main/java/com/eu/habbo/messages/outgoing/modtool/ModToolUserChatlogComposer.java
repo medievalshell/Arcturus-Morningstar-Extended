@@ -5,12 +5,15 @@ import com.eu.habbo.habbohotel.modtool.ModToolRoomVisit;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.outgoing.MessageComposer;
 import com.eu.habbo.messages.outgoing.Outgoing;
-
 import java.text.SimpleDateFormat;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 
 public class ModToolUserChatlogComposer extends MessageComposer {
     public static SimpleDateFormat format = new SimpleDateFormat("HH:mm");
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER =
+            DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault());
     private final ArrayList<ModToolRoomVisit> set;
     private final int userId;
     private final String username;
@@ -40,7 +43,7 @@ public class ModToolUserChatlogComposer extends MessageComposer {
 
             this.response.appendShort(visit.chat.size());
             for (ModToolChatLog chatLog : visit.chat) {
-                this.response.appendString(format.format(chatLog.timestamp * 1000L));
+                this.response.appendString(formatTimestamp(chatLog.timestamp));
                 this.response.appendInt(chatLog.habboId);
                 this.response.appendString(chatLog.username);
                 this.response.appendString(chatLog.message);
@@ -48,6 +51,10 @@ public class ModToolUserChatlogComposer extends MessageComposer {
             }
         }
         return this.response;
+    }
+
+    static String formatTimestamp(int timestamp) {
+        return ModToolChatlogTimestamp.format(timestamp);
     }
 
     public ArrayList<ModToolRoomVisit> getSet() {

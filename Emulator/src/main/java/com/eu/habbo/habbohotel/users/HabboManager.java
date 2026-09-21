@@ -2,11 +2,19 @@ package com.eu.habbo.habbohotel.users;
 
 import com.eu.habbo.Emulator;
 import com.eu.habbo.database.SqlQueries;
+import com.eu.habbo.habbohotel.economy.EconomyLedger;
+import com.eu.habbo.habbohotel.economy.EconomyOperation;
+import com.eu.habbo.habbohotel.economy.EconomyOperationId;
+import com.eu.habbo.habbohotel.habbicons.HabbiconService;
 import com.eu.habbo.habbohotel.modtool.ModToolBan;
 import com.eu.habbo.habbohotel.permissions.Permission;
 import com.eu.habbo.habbohotel.permissions.Rank;
 import com.eu.habbo.messages.ServerMessage;
-import com.eu.habbo.messages.outgoing.catalog.*;
+import com.eu.habbo.messages.outgoing.catalog.CatalogModeComposer;
+import com.eu.habbo.messages.outgoing.catalog.CatalogUpdatedComposer;
+import com.eu.habbo.messages.outgoing.catalog.DiscountComposer;
+import com.eu.habbo.messages.outgoing.catalog.GiftConfigurationComposer;
+import com.eu.habbo.messages.outgoing.catalog.RecyclerLogicComposer;
 import com.eu.habbo.messages.outgoing.catalog.marketplace.MarketplaceConfigComposer;
 import com.eu.habbo.messages.outgoing.generic.alerts.GenericAlertComposer;
 import com.eu.habbo.messages.outgoing.modtool.ModToolComposer;
@@ -14,9 +22,6 @@ import com.eu.habbo.messages.outgoing.users.UserPerksComposer;
 import com.eu.habbo.messages.outgoing.users.UserPermissionsComposer;
 import com.eu.habbo.plugin.events.users.UserRankChangedEvent;
 import com.eu.habbo.plugin.events.users.UserRegisteredEvent;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -27,34 +32,47 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class HabboManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(HabboManager.class);
 
-    //Configuration. Loaded from database & updated accordingly.
-    public static String WELCOME_MESSAGE = "";
+    // Configuration. Loaded from database & updated accordingly.
+    public static volatile String WELCOME_MESSAGE = "";
     public static boolean NAMECHANGE_ENABLED = false;
 
     private final ConcurrentHashMap<Integer, Habbo> onlineHabbos;
     private final ConcurrentHashMap<String, Habbo> onlineHabbosByName;
     private final ConcurrentHashMap<Integer, String> usernameCache = new ConcurrentHashMap<>();
+    private final DisconnectPersistenceGate disconnectPersistence;
+    private final HabbiconService habbiconService;
 
     public HabboManager() {
+        this(Runnable::run);
+    }
+
+    public HabboManager(Executor persistenceExecutor) {
+        this(persistenceExecutor, null);
+    }
+
+    public HabboManager(Executor persistenceExecutor, HabbiconService habbiconService) {
+        this.habbiconService = habbiconService;
         long millis = System.currentTimeMillis();
 
         this.onlineHabbos = new ConcurrentHashMap<>();
         this.onlineHabbosByName = new ConcurrentHashMap<>();
+        this.disconnectPersistence = new DisconnectPersistenceGate(persistenceExecutor);
 
         LOGGER.info("Habbo Manager -> Loaded! ({} MS)", System.currentTimeMillis() - millis);
     }
 
     public static HabboInfo getOfflineHabboInfo(int id) {
         try {
-            return SqlQueries.queryOne(
-                    "SELECT * FROM users WHERE id = ? LIMIT 1",
-                    HabboInfo::new,
-                    id).orElse(null);
+            return SqlQueries.queryOne("SELECT * FROM users WHERE id = ? LIMIT 1", HabboInfo::new, id)
+                    .orElse(null);
         } catch (SqlQueries.DataAccessException e) {
             LOGGER.error("Caught SQL exception", e);
             return null;
@@ -63,10 +81,8 @@ public class HabboManager {
 
     public static HabboInfo getOfflineHabboInfo(String username) {
         try {
-            return SqlQueries.queryOne(
-                    "SELECT * FROM users WHERE username = ? LIMIT 1",
-                    HabboInfo::new,
-                    username).orElse(null);
+            return SqlQueries.queryOne("SELECT * FROM users WHERE username = ? LIMIT 1", HabboInfo::new, username)
+                    .orElse(null);
         } catch (SqlQueries.DataAccessException e) {
             LOGGER.error("Caught SQL exception", e);
             return null;
@@ -74,6 +90,7 @@ public class HabboManager {
     }
 
     public void addHabbo(Habbo habbo) {
+        habbo.setHabbiconService(this.habbiconService);
         this.onlineHabbos.put(habbo.getHabboInfo().getId(), habbo);
         this.onlineHabbosByName.put(habbo.getHabboInfo().getUsername().toLowerCase(), habbo);
     }
@@ -92,11 +109,17 @@ public class HabboManager {
     }
 
     public Habbo loadHabbo(String sso) {
-        Habbo habbo;
         int userId = 0;
 
+        // The SSO lookup deliberately ignores auth_ticket_expires_at: tickets are
+        // single-use (consumed right after a successful login below), so replay is
+        // bounded by consumption, not by a TTL. Third-party CMSes (e.g. AtomCMS)
+        // only write auth_ticket, and a stale expiry left over from a built-in
+        // issuer used to block their logins. The expiry column remains in use by
+        // the emulator's own HTTP session endpoints.
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement("SELECT id FROM users WHERE auth_ticket = ? AND (auth_ticket_expires_at IS NULL OR auth_ticket_expires_at >= NOW()) LIMIT 1")) {
+                PreparedStatement statement =
+                        connection.prepareStatement("SELECT id FROM users WHERE auth_ticket = ? LIMIT 1")) {
             statement.setString(1, sso);
             try (ResultSet s = statement.executeQuery()) {
                 if (s.next()) {
@@ -108,6 +131,51 @@ public class HabboManager {
             LOGGER.error("Caught SQL exception", e);
         }
 
+        Habbo habbo = loadHabbo(
+                userId, "SELECT * FROM users WHERE auth_ticket = ? LIMIT 1", statement -> statement.setString(1, sso));
+
+        if (habbo != null) {
+            this.consumeSsoTicket(habbo.getHabboInfo().getId());
+        }
+
+        return habbo;
+    }
+
+    /**
+     * Consumes (clears) a user's SSO ticket after a successful login so it
+     * cannot be replayed. Mid-session reconnects are unaffected: GameClient
+     * disposal parks the habbo and SessionResumeManager restores the same
+     * ticket for the reconnect grace window ("ticket cleared to '' after
+     * login" is exactly the state its restore-guard expects), and newer
+     * clients additionally carry a session-recovery token. Hotel owners can
+     * keep tickets alive for debugging with emulator setting debug_sso = 1
+     * (default 0).
+     */
+    public void consumeSsoTicket(int userId) {
+        if (Emulator.getConfig().getBoolean("debug_sso", false)) {
+            return;
+        }
+
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "UPDATE users SET auth_ticket = '', auth_ticket_expires_at = NULL WHERE id = ? LIMIT 1")) {
+            statement.setInt(1, userId);
+            statement.execute();
+        } catch (SQLException e) {
+            LOGGER.error("Failed to consume SSO ticket for user " + userId, e);
+        }
+    }
+
+    public Habbo loadHabboById(int userId) {
+        return loadHabbo(userId, "SELECT * FROM users WHERE id = ? LIMIT 1", statement -> statement.setInt(1, userId));
+    }
+
+    private Habbo loadHabbo(int userId, String query, StatementBinder binder) {
+        Habbo habbo;
+        if (userId <= 0 || !this.awaitDisconnectPersistence(userId)) {
+            return null;
+        }
+
         habbo = this.cloneCheck(userId);
         if (habbo != null) {
             habbo.alert(Emulator.getTexts().getValue("loggedin.elsewhere"));
@@ -115,15 +183,18 @@ public class HabboManager {
             habbo = null;
         }
 
+        if (!this.awaitDisconnectPersistence(userId)) {
+            return null;
+        }
+
         ModToolBan ban = Emulator.getGameEnvironment().getModToolManager().checkForBan(userId);
         if (ban != null) {
             return null;
         }
 
-
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement("SELECT * FROM users WHERE auth_ticket = ? AND (auth_ticket_expires_at IS NULL OR auth_ticket_expires_at >= NOW()) LIMIT 1")) {
-            statement.setString(1, sso);
+                PreparedStatement statement = connection.prepareStatement(query)) {
+            binder.bind(statement);
             try (ResultSet set = statement.executeQuery()) {
                 if (set.next()) {
                     habbo = new Habbo(set);
@@ -147,6 +218,31 @@ public class HabboManager {
         }
 
         return habbo;
+    }
+
+    @FunctionalInterface
+    private interface StatementBinder {
+        void bind(PreparedStatement statement) throws SQLException;
+    }
+
+    private boolean awaitDisconnectPersistence(int userId) {
+        if (this.disconnectPersistence.await(userId)) {
+            return true;
+        }
+        LOGGER.warn("Interrupted while waiting for disconnect persistence for user {}", userId);
+        return false;
+    }
+
+    DisconnectPersistenceGate.Registration beginDisconnectPersistence(int userId) {
+        return this.disconnectPersistence.begin(userId);
+    }
+
+    void submitDisconnectPersistence(DisconnectPersistenceGate.Registration registration, Runnable persistence) {
+        this.disconnectPersistence.submit(registration, persistence);
+    }
+
+    void cancelDisconnectPersistence(DisconnectPersistenceGate.Registration registration) {
+        this.disconnectPersistence.cancel(registration);
     }
 
     public HabboInfo getHabboInfo(int id) {
@@ -198,9 +294,7 @@ public class HabboManager {
 
     public synchronized void dispose() {
 
-
-//
-
+        //
 
         LOGGER.info("Habbo Manager -> Disposed!");
     }
@@ -233,7 +327,6 @@ public class HabboManager {
         }
     }
 
-
     public void setRank(int userId, int rankId) throws Exception {
         Habbo habbo = this.getHabbo(userId);
 
@@ -246,7 +339,7 @@ public class HabboManager {
             if (!oldRank.getBadge().isEmpty()) {
                 habbo.deleteBadge(habbo.getInventory().getBadgesComponent().getBadge(oldRank.getBadge()));
             }
-            if(oldRank.getRoomEffect() > 0) {
+            if (oldRank.getRoomEffect() > 0) {
                 habbo.getInventory().getEffectsComponent().effects.remove(oldRank.getRoomEffect());
             }
 
@@ -256,8 +349,10 @@ public class HabboManager {
                 habbo.addBadge(newRank.getBadge());
             }
 
-            if(newRank.getRoomEffect() > 0) {
-                habbo.getInventory().getEffectsComponent().createRankEffect(habbo.getHabboInfo().getRank().getRoomEffect());
+            if (newRank.getRoomEffect() > 0) {
+                habbo.getInventory()
+                        .getEffectsComponent()
+                        .createRankEffect(habbo.getHabboInfo().getRank().getRoomEffect());
             }
 
             habbo.getClient().sendResponse(new UserPermissionsComposer(habbo));
@@ -274,7 +369,9 @@ public class HabboManager {
             habbo.getClient().sendResponse(new MarketplaceConfigComposer());
             habbo.getClient().sendResponse(new GiftConfigurationComposer());
             habbo.getClient().sendResponse(new RecyclerLogicComposer());
-            habbo.alert(Emulator.getTexts().getValue("commands.generic.cmd_give_rank.new_rank").replace("id", newRank.getName()));
+            habbo.alert(Emulator.getTexts()
+                    .getValue("commands.generic.cmd_give_rank.new_rank")
+                    .replace("id", newRank.getName()));
         } else {
             try {
                 SqlQueries.update("UPDATE users SET `rank` = ? WHERE id = ? LIMIT 1", rankId, userId);
@@ -289,12 +386,21 @@ public class HabboManager {
     public void giveCredits(int userId, int credits) {
         Habbo habbo = this.getHabbo(userId);
         if (habbo != null) {
-            habbo.giveCredits(credits);
+            habbo.giveCredits(credits, "system.habbo_manager");
         } else {
             try {
-                SqlQueries.update("UPDATE users SET credits = credits + ? WHERE id = ? LIMIT 1", credits, userId);
-            } catch (SqlQueries.DataAccessException e) {
-                LOGGER.error("Caught SQL exception", e);
+                EconomyLedger.execute(new EconomyOperation(
+                        EconomyOperationId.create("credits:" + userId),
+                        userId,
+                        userId,
+                        credits > 0 ? "credit_grant" : "credit_debit",
+                        "system.habbo_manager",
+                        EconomyLedger.CREDITS,
+                        credits,
+                        null,
+                        "offline"));
+            } catch (Exception e) {
+                LOGGER.error("Unable to apply audited offline credit mutation for user {}", userId, e);
             }
         }
     }
